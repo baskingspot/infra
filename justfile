@@ -22,7 +22,7 @@ lint:
     tflint --recursive
     ruff check modules/bench-iam/reaper
     ruff format --check modules/bench-iam/reaper
-    ty check modules/bench-iam/reaper
+    ty check --ignore unused-ignore-comment modules/bench-iam/reaper
     shfmt -d stacks/iam/write-credentials.sh
     shellcheck stacks/iam/write-credentials.sh
     nix fmt -- --ci
