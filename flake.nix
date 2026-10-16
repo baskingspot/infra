@@ -11,21 +11,25 @@
   outputs =
     inputs@{ flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
-      imports = [ inputs.baskingspot.flakeModules.base ];
+      imports = with inputs.baskingspot.flakeModules; [
+        base
+        shell
+        terraform
+      ];
 
       perSystem =
         { pkgs, config, ... }:
         {
           devShells.default = pkgs.mkShell {
-            inputsFrom = [ config.devShells.base ];
+            inputsFrom = with config.devShells; [
+              base
+              shell
+              terraform
+            ];
 
             packages = with pkgs; [
-              opentofu
               oxfmt
               ruff
-              shellcheck
-              shfmt
-              tflint
               ty
               uv
             ];
