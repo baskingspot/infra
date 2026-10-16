@@ -1,0 +1,9 @@
+.direnv/
+.envrc.local
+__pycache__/
+.pytest_cache/
+
+# OpenTofu state and the private key it writes hold secrets. Never commit them.
+**/.terraform/
+**/terraform.tfstate*
+**/*.pem
