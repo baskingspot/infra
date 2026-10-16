@@ -26,7 +26,7 @@ lint:
     shfmt -d stacks/iam/write-credentials.sh
     shellcheck stacks/iam/write-credentials.sh
     nix fmt -- --ci
-    oxfmt --check README.md AGENTS.md docs
+    oxfmt --check README.md AGENTS.md docs .github
     actionlint
     zizmor .
     just --fmt --check
@@ -38,7 +38,7 @@ fmt:
     ruff format modules/bench-iam/reaper
     shfmt -w stacks/iam/write-credentials.sh
     nix fmt
-    oxfmt README.md AGENTS.md docs
+    oxfmt README.md AGENTS.md docs .github
     just --fmt
 
 [doc("Everything CI runs")]
