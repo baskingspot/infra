@@ -28,7 +28,6 @@
             ];
 
             packages = with pkgs; [
-              oxfmt
               ruff
               ty
               uv
