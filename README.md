@@ -7,7 +7,7 @@
 
 OpenTofu modules and stacks for the baskingspot EC2 benchmark fleet.
 
-The default fleet is `baskingspot-bench`, in `us-west-2`. Nothing in this repo is applied by CI or by an agent. A person with the right AWS profile applies a stack, using `docs/runbook.md`. The code started as `fastmem-zig`'s `infra/`.
+The default fleet is `baskingspot-bench`, in `us-west-2`. Nothing in this repo is applied by CI or by an agent. A person with the right AWS profile applies a stack, using `docs/runbook.md`.
 
 ## Layout
 
