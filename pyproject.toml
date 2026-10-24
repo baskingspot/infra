@@ -15,7 +15,7 @@ members = ["harness"]
 ec2bench = { workspace = true }
 
 [dependency-groups]
-dev = ["pytest>=9.1", "moto[ec2]>=5", "ruff>=0.17.2", "ty>=0.0.91"]
+dev = ["pytest==9.1.1", "moto[ec2]==5.2.4", "ruff==0.17.2", "ty==0.0.91"]
 
 [tool.pytest.ini_options]
 testpaths = ["harness/tests", "modules/bench-iam/reaper"]
