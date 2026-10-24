@@ -1,11 +1,12 @@
 # Durable fleet resources for baskingspot-bench (modules/bench-base).
 #
-# The bench profile (baskingspot-bench) applies this stack. The harness reads the
-# outputs with `tofu -chdir=infra/base output -json`. infra/README.md is the
-# runbook.
+# The bench profile (baskingspot-bench) applies this stack. The harness finds
+# the launch templates by name and project tag and reads no state from here.
+# docs/runbook.md is the operator documentation.
 #
-# terraform.tfstate and bench.pem hold the private SSH key. Both are
-# gitignored.
+# terraform.tfstate holds the box private key. It is gitignored. Do not commit
+# it and do not copy it off this machine. The apply also writes the key to
+# ~/.ssh/<project>.pem, which is where the harness looks for it.
 
 terraform {
   required_version = ">= 1.12"
@@ -43,8 +44,9 @@ variable "account_id" {
 }
 
 locals {
-  # Keep equal to project.name and project.region in bench.toml. The harness
-  # test suite checks that.
+  # Keep equal to project.name and project.region in bench.toml. The policy
+  # refuses a launch whose Project tag has another value, so a mismatch fails
+  # at the first launch instead of creating a box that the reaper ignores.
   project    = var.project
   region     = "us-west-2"
   account_id = var.account_id
@@ -80,7 +82,7 @@ module "bench" {
   # Keep equal to project.image_version in bench.toml.
   image_version = "1"
   nixos_module  = file("${path.module}/image.nix")
-  key_file      = "${path.module}/bench.pem"
+  key_file      = pathexpand("~/.ssh/${local.project}.pem")
 }
 
 # The resources were created at the root before the module existed.

@@ -1,18 +1,21 @@
 # infra
 
-This directory holds the durable AWS resources and the box image of the
-benchmark fleet. A harness launches and terminates the instances through the EC2 API. It is not in this repo. The contract between the two is the `project` and `region` values, `image_version`, and the stack outputs.
+This repository holds the durable AWS resources, the box image, and the
+harness of the benchmark fleet. The harness launches and terminates the
+instances through the EC2 API. The contract between the two is the `project`
+and `region` values, `image_version`, and the stack outputs.
 
 ## Layout
 
-| Path                       | Content                                                                                    | Who applies it                 |
-| -------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------ |
-| `iam/`                     | Root stack: the IAM user, its EC2 policy, one access key, and the reaper                   | A human                        |
-| `iam/write-credentials.sh` | Writes the access key to `~/.aws/credentials`                                              | A human                        |
-| `base/`                    | Root stack: security group, key pair, launch templates                                     | The bench profile              |
-| `base/image.nix`           | An example project NixOS module that the box configuration imports                         | `base/` puts it in `user_data` |
-| `modules/bench-iam/`       | Module: `policy.tf` (the user policy), `reaper.tf` and `reaper/` (the reaper)              | `iam/` uses it                 |
-| `modules/bench-base/`      | Module: launch templates, and `image.nix.tftpl` (the box configuration with the TTL guard) | `base/` uses it                |
+| Path                              | Content                                                                                    | Who applies it                        |
+| --------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------- |
+| `stacks/iam/`                     | Root stack: the IAM user, its EC2 policy, one access key, and the reaper                   | A human                               |
+| `stacks/iam/write-credentials.sh` | Writes the access key to `~/.aws/credentials`                                              | A human                               |
+| `stacks/base/`                    | Root stack: security group, key pair, launch templates                                     | The bench profile                     |
+| `stacks/base/image.nix`           | An example project NixOS module that the box configuration imports                         | `stacks/base/` puts it in `user_data` |
+| `modules/bench-iam/`              | Module: `policy.tf` (the user policy), `reaper.tf` and `reaper/` (the reaper)              | `stacks/iam/` uses it                 |
+| `modules/bench-base/`             | Module: launch templates, and `image.nix.tftpl` (the box configuration with the TTL guard) | `stacks/base/` uses it                |
+| `harness/`                        | The Python package `ec2bench`: the fleet commands and the adapter contract                 | A consumer pins a tag of it           |
 
 ## Configuration
 
@@ -22,7 +25,7 @@ values are `baskingspot-bench`, `us-west-2`, and the account ID in `TF_VAR_accou
 the harness configuration. The AWS provider refuses
 every other account.
 
-The instance allowlist is `instance_families` in `iam/main.tf`. It does not
+The instance allowlist is `instance_families` in `stacks/iam/main.tf`. It does not
 come from the harness configuration. The agent can edit that file, and a cost control
 must not follow a file that the agent edits.
 
@@ -39,7 +42,7 @@ fast path.
 
 | Mechanism | Where it runs                        | Who controls it                      |
 | --------- | ------------------------------------ | ------------------------------------ |
-| Reaper    | A Lambda function, outside the boxes | The `iam/` stack (a human)           |
+| Reaper    | A Lambda function, outside the boxes | The `stacks/iam/` stack (a human)    |
 | TTL guard | Each box, from the launch template   | The bench user (a human or an agent) |
 
 The bench user writes the launch templates. Thus it controls the
@@ -157,7 +160,7 @@ SSO profile.
 
 ## Change the IAM stack
 
-A change to `iam/` or to `modules/bench-iam/` needs a human.
+A change to `stacks/iam/` or to `modules/bench-iam/` needs a human.
 
 1. If the change needs a new launch template, apply the base stack first.
    For example, the policy requires the `Project` tag on new network
@@ -243,14 +246,14 @@ If an action fails, the run ends with an error after all other actions. The
 
 To see the decisions of the reaper without a change to AWS, use a dry run:
 
-1. In `iam/main.tf`, add `reaper_dry_run = true` to `module "bench"`.
+1. In `stacks/iam/main.tf`, add `reaper_dry_run = true` to `module "bench"`.
 2. Apply the IAM stack.
 3. Read the log. In a dry run, EC2 checks each call and changes nothing.
    A result of `ok` means that the role has the permission.
 4. Remove `reaper_dry_run` and apply the IAM stack again.
 
 To change the maximum lifetime, set `reaper_max_lifetime_hours` in
-`module "bench"` in `iam/main.tf`. Keep it above `fleet.max_ttl`. Then apply
+`module "bench"` in `stacks/iam/main.tf`. Keep it above `fleet.max_ttl`. Then apply
 the IAM stack.
 
 ## Apply the base stack
@@ -270,13 +273,22 @@ The bench profile applies this stack. A human or an agent can do it.
    tofu -chdir=stacks/base output -json
    ```
 
-The apply writes the SSH private key to `stacks/base/bench.pem` with mode
-`0600`. The harness reads these outputs:
+The apply writes the SSH private key to `~/.ssh/baskingspot-bench.pem` with
+mode `0600`, outside the repository. A consumer harness reads no state: it
+finds the launch templates by name (`<project>-<arch>`) and `Project` tag,
+and reads the key from `~/.ssh/<project>.pem`. Set `ssh_key` in `bench.toml`
+to use another path.
+
+An existing checkout can copy `stacks/base/bench.pem` to the new path instead
+of applying the stack again. The key does not change, only its location.
+Remove the old copy after the move.
+
+The outputs are:
 
 | Output                | Value                                                           |
 | --------------------- | --------------------------------------------------------------- |
 | `launch_template_ids` | Map from architecture (`x86_64`, `arm64`) to launch template ID |
-| `key_file`            | Absolute path of `bench.pem`                                    |
+| `key_file`            | Absolute path of the SSH key                                    |
 | `security_group_id`   | ID of the SSH security group                                    |
 
 ## Change the box image
@@ -311,7 +323,8 @@ The box configuration has two parts:
 5. Apply the base stack. The apply adds a new version to each launch
    template.
 
-6. Terminate the boxes. Old boxes keep the old configuration.
+6. Terminate the boxes. Old boxes keep the old configuration. Run this from
+   a project checkout, not from this repository.
 
    ```sh
    uv run bench down --all
@@ -338,7 +351,7 @@ The box configuration has two parts:
 
 ## Change the instance allowlist
 
-1. Edit `instance_families` in `iam/main.tf`.
+1. Edit `instance_families` in `stacks/iam/main.tf`.
 2. Do the procedure "Change the IAM stack".
 
 ## Rotate the access key
@@ -357,7 +370,7 @@ The box configuration has two parts:
 
 ## Tear down
 
-1. Terminate all boxes:
+1. Terminate all boxes, from a project checkout:
 
    ```sh
    uv run bench down --all
@@ -375,7 +388,8 @@ The box configuration has two parts:
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/iam destroy
    ```
 
-4. Remove the `[baskingspot-bench]` section from `~/.aws/credentials`.
+4. Remove the `[baskingspot-bench]` section from `~/.aws/credentials`, and
+   remove `~/.ssh/baskingspot-bench.pem`.
 
 ## Test the modules offline
 
@@ -387,7 +401,7 @@ tofu -chdir=modules/bench-iam init -backend=false
 tofu -chdir=modules/bench-iam test
 tofu -chdir=modules/bench-base init -backend=false
 tofu -chdir=modules/bench-base test
-python3 -m unittest discover -s modules/bench-iam/reaper -v
+uv run pytest modules/bench-iam/reaper -v
 ```
 
 The `bench-iam` tests fail if the user policy is longer than 6,144
@@ -500,4 +514,9 @@ The log group keeps logs for 30 days (`reaper_log_retention_days`).
 3. If the project uses other instance families, edit `instance_families` in `stacks/iam/main.tf`.
 4. Replace `stacks/base/image.nix` with the NixOS module of the project.
 5. Do the procedures "Bootstrap the account" and "Apply the base stack".
-6. Configure the harness with the same `project` and `region`, and the `image_version` of the base stack.
+6. Add the harness to the project's `uv` project and pin a tag of this
+   repository. `harness/README.md` has the install form and the adapter
+   contract.
+7. Write `bench.toml` with the same `project` and `region`, and the
+   `image_version` of the base stack. The harness needs no path to this
+   repository.

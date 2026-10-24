@@ -1,4 +1,6 @@
-# The harness interface: ec2bench reads these three outputs.
+# Stack outputs. The harness finds the launch templates by name and project
+# tag and does not read these; an operator reads them, and the runbook's
+# dry-run commands use the template IDs.
 
 output "launch_template_ids" {
   description = "Launch template ID by architecture. The keys match the arch field of a target in bench.toml."

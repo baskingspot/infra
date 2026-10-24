@@ -2,7 +2,7 @@
 #
 # A human applies this stack with an IAM-capable profile (BENCH_BOOTSTRAP_PROFILE in .envrc.local).
 # write-credentials.sh then writes the access key to the baskingspot-bench
-# profile. infra/README.md is the runbook.
+# profile. docs/runbook.md is the operator documentation.
 #
 # terraform.tfstate holds the secret access key. It is gitignored. Do not
 # commit it and do not copy it off this machine.
@@ -39,8 +39,9 @@ variable "account_id" {
 }
 
 locals {
-  # Keep equal to project.name and project.region in bench.toml. The harness
-  # test suite checks that.
+  # Keep equal to project.name and project.region in bench.toml. The policy
+  # refuses a launch whose Project tag has another value, so a mismatch fails
+  # at the first launch instead of creating a box that the reaper ignores.
   project    = var.project
   region     = "us-west-2"
   account_id = var.account_id

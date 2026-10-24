@@ -1,0 +1,57 @@
+[project]
+name = "baskingspot-infra"
+version = "0.0.0"
+description = "Development environment for the baskingspot EC2 benchmark infrastructure."
+requires-python = ">=3.15"
+dependencies = ["ec2bench"]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["harness"]
+
+[tool.uv.sources]
+ec2bench = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest>=9.1", "moto[ec2]>=5", "ruff>=0.17.2", "ty>=0.0.91"]
+
+[tool.pytest.ini_options]
+testpaths = ["harness/tests", "modules/bench-iam/reaper"]
+
+[tool.ruff]
+target-version = "py315"
+line-length = 100
+
+[tool.ruff.lint]
+select = [
+  "E", "W",   # pycodestyle
+  "F",        # pyflakes
+  "I",        # isort
+  "UP",       # pyupgrade
+  "B",        # bugbear
+  "C4",       # comprehensions
+  "SIM",      # simplify
+  "PIE",      # misc
+  "PT",       # pytest style
+  "RUF",      # ruff-specific
+  "S",        # bandit
+  "PTH",      # pathlib
+  "RET",      # return
+  "ARG",      # unused arguments
+  "PERF",     # performance
+  "FURB",     # refurb
+  "BLE",      # blind except
+]
+
+[tool.ruff.lint.per-file-ignores]
+# A test asserts and uses fake credentials by design.
+"harness/tests/*" = ["S101", "S105", "S106"]
+# The harness runs ssh, rsync, and git from PATH, with an argument list.
+"harness/ec2bench/*" = ["S603", "S607"]
+# The reaper's tests use unittest.TestCase; pytest runs them unchanged.
+"modules/bench-iam/reaper/test_reaper.py" = ["PT009", "PT027", "ARG002"]
+
+[tool.ty.environment]
+python-version = "3.15"

@@ -51,9 +51,7 @@ def volume(
     }
 
 
-def interface(
-    interface_id: str = "eni-1", status: str = "available", **tag_pairs: str
-) -> dict:
+def interface(interface_id: str = "eni-1", status: str = "available", **tag_pairs: str) -> dict:
     tag_pairs.setdefault("Project", PROJECT)
     return {
         "NetworkInterfaceId": interface_id,
@@ -89,7 +87,7 @@ class ParseUtcTest(unittest.TestCase):
             " 2026-09-24T04:00:00Z",
             "2026-02-30T04:00:00Z",
             "2026-09-24T25:00:00Z",
-            "２０２６-09-24T04:00:00Z",
+            "２０２６-09-24T04:00:00Z",  # noqa: RUF001 — fullwidth digits are the case
         ]:
             with self.subTest(value=value):
                 self.assertIsNone(reaper.parse_utc(value))
@@ -114,9 +112,7 @@ class InstanceReasonTest(unittest.TestCase):
 
     def test_keeps_a_healthy_box(self) -> None:
         self.assertIsNone(self.reason(instance(ExpiresAt="2026-09-24T16:00:00Z")))
-        self.assertIsNone(
-            self.reason(instance(state="pending", ExpiresAt="2026-09-24T16:00:00Z"))
-        )
+        self.assertIsNone(self.reason(instance(state="pending", ExpiresAt="2026-09-24T16:00:00Z")))
 
     def test_expires_at_equal_to_now_is_not_yet_expired(self) -> None:
         self.assertIsNone(self.reason(instance(ExpiresAt="2026-09-24T12:00:00Z")))
@@ -130,9 +126,7 @@ class InstanceReasonTest(unittest.TestCase):
         for state in ["stopped", "stopping"]:
             with self.subTest(state=state):
                 self.assertEqual(
-                    self.reason(
-                        instance(state=state, ExpiresAt="2026-09-24T16:00:00Z")
-                    ),
+                    self.reason(instance(state=state, ExpiresAt="2026-09-24T16:00:00Z")),
                     f"state is {state}",
                 )
 
@@ -159,9 +153,7 @@ class InstanceReasonTest(unittest.TestCase):
         )
 
     def test_max_lifetime_overrides_a_far_expires_at(self) -> None:
-        old = instance(
-            launched=NOW - DAY - timedelta(seconds=1), ExpiresAt="9999-12-31T23:59:59Z"
-        )
+        old = instance(launched=NOW - DAY - timedelta(seconds=1), ExpiresAt="9999-12-31T23:59:59Z")
         self.assertIn("past the maximum lifetime", self.reason(old) or "")
         young = instance(launched=NOW - DAY, ExpiresAt="9999-12-31T23:59:59Z")
         self.assertIsNone(self.reason(young))
@@ -172,12 +164,8 @@ class VolumeReasonTest(unittest.TestCase):
         self.assertIsNotNone(reaper.volume_reason(volume(), NOW))
 
     def test_keeps_young_or_attached_volume(self) -> None:
-        self.assertIsNone(
-            reaper.volume_reason(volume(created=NOW - timedelta(minutes=10)), NOW)
-        )
-        self.assertIsNone(
-            reaper.volume_reason(volume(created=NOW - timedelta(minutes=2)), NOW)
-        )
+        self.assertIsNone(reaper.volume_reason(volume(created=NOW - timedelta(minutes=10)), NOW))
+        self.assertIsNone(reaper.volume_reason(volume(created=NOW - timedelta(minutes=2)), NOW))
         for state in ["creating", "in-use", "deleting"]:
             with self.subTest(state=state):
                 self.assertIsNone(reaper.volume_reason(volume(state=state), NOW))
@@ -188,13 +176,9 @@ class InterfaceActionTest(unittest.TestCase):
         self.assertEqual(reaper.interface_action(interface(), NOW), "mark")
 
     def test_marks_again_when_the_mark_is_not_valid(self) -> None:
+        self.assertEqual(reaper.interface_action(interface(OrphanSeenAt="junk"), NOW), "mark")
         self.assertEqual(
-            reaper.interface_action(interface(OrphanSeenAt="junk"), NOW), "mark"
-        )
-        self.assertEqual(
-            reaper.interface_action(
-                interface(OrphanSeenAt="2026-09-25T00:00:00Z"), NOW
-            ),
+            reaper.interface_action(interface(OrphanSeenAt="2026-09-25T00:00:00Z"), NOW),
             "mark",
         )
 
@@ -203,9 +187,7 @@ class InterfaceActionTest(unittest.TestCase):
             reaper.interface_action(interface(OrphanSeenAt="2026-09-24T11:50:00Z"), NOW)
         )
         self.assertEqual(
-            reaper.interface_action(
-                interface(OrphanSeenAt="2026-09-24T11:49:59Z"), NOW
-            ),
+            reaper.interface_action(interface(OrphanSeenAt="2026-09-24T11:49:59Z"), NOW),
             "delete",
         )
 
@@ -259,9 +241,7 @@ class ConfigTest(unittest.TestCase):
 
     def test_dry_run(self) -> None:
         self.assertTrue(reaper.Config.from_env({**self.ENV, "DRY_RUN": "true"}).dry_run)
-        self.assertFalse(
-            reaper.Config.from_env({**self.ENV, "DRY_RUN": "false"}).dry_run
-        )
+        self.assertFalse(reaper.Config.from_env({**self.ENV, "DRY_RUN": "false"}).dry_run)
 
     def test_rejects_bad_values(self) -> None:
         for change in [
@@ -331,9 +311,7 @@ class FakeEC2:
 
 
 def config(dry_run: bool = False) -> reaper.Config:
-    return reaper.Config(
-        project=PROJECT, region="us-west-2", max_lifetime=DAY, dry_run=dry_run
-    )
+    return reaper.Config(project=PROJECT, region="us-west-2", max_lifetime=DAY, dry_run=dry_run)
 
 
 class RunTest(unittest.TestCase):
@@ -389,9 +367,7 @@ class RunTest(unittest.TestCase):
                     {
                         "DryRun": False,
                         "Resources": ["eni-new"],
-                        "Tags": [
-                            {"Key": "OrphanSeenAt", "Value": "2026-09-24T12:00:00Z"}
-                        ],
+                        "Tags": [{"Key": "OrphanSeenAt", "Value": "2026-09-24T12:00:00Z"}],
                     },
                 ),
                 (
@@ -413,9 +389,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual(summary["errors"], [])
 
     def test_dry_run_reports_missing_permissions(self) -> None:
-        ec2 = self.fleet(
-            errors={("delete_volume", "vol-old"): ["UnauthorizedOperation"]}
-        )
+        ec2 = self.fleet(errors={("delete_volume", "vol-old"): ["UnauthorizedOperation"]})
         with (
             self.assertLogs("reaper", "INFO"),
             self.assertRaisesRegex(RuntimeError, "1 reaper action"),
@@ -447,9 +421,7 @@ class RunTest(unittest.TestCase):
         self.assertEqual(summary["errors"], [])
 
     def test_one_failure_does_not_stop_the_other_actions(self) -> None:
-        ec2 = self.fleet(
-            errors={("terminate_instances", "i-expired"): ["UnauthorizedOperation"]}
-        )
+        ec2 = self.fleet(errors={("terminate_instances", "i-expired"): ["UnauthorizedOperation"]})
         with self.assertLogs("reaper", "INFO"), self.assertRaises(RuntimeError):
             reaper.run(ec2, config(), NOW)
         self.assertEqual(

@@ -1,10 +1,10 @@
 # bench-base: the durable resources of a tag-scoped EC2 benchmark fleet.
 #
 # It creates the SSH security group, the key pair, and one launch template
-# for each architecture. A harness (ec2bench) launches and terminates
-# instances from the launch templates, and reads the outputs with
-# `tofu output -json`. The bench user that the bench-iam module creates, for
-# the same project, can apply this module.
+# for each architecture. A harness (ec2bench) finds the launch templates by
+# name and project tag, and launches and terminates instances from them. The
+# bench user that the bench-iam module creates, for the same project, can
+# apply this module.
 #
 # The caller owns the provider configuration. Its default_tags must put
 # Project = var.project on every resource: the bench-iam policy requires the

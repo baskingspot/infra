@@ -70,9 +70,7 @@ def in_project(tags: Mapping[str, str], project: str) -> bool:
     resource with PROJECT=<project> is inside the IAM boundary. The reaper
     must see it too.
     """
-    return any(
-        key.lower() == "project" and value == project for key, value in tags.items()
-    )
+    return any(key.lower() == "project" and value == project for key, value in tags.items())
 
 
 def instance_reason(
@@ -171,7 +169,7 @@ class Config:
     dry_run: bool
 
     @classmethod
-    def from_env(cls, env: Mapping[str, str]) -> "Config":
+    def from_env(cls, env: Mapping[str, str]) -> Config:
         seconds = int(env["MAX_LIFETIME_SECONDS"])
         if seconds <= 0:
             raise ValueError("MAX_LIFETIME_SECONDS must be positive")
@@ -235,9 +233,7 @@ def _terminate(ec2: Any, instance_id: str, dry_run: bool) -> str | None:
     return code
 
 
-def _pages(
-    ec2: Any, operation: str, key: str, filters: list[dict[str, Any]]
-) -> list[Any]:
+def _pages(ec2: Any, operation: str, key: str, filters: list[dict[str, Any]]) -> list[Any]:
     items: list[Any] = []
     for page in ec2.get_paginator(operation).paginate(Filters=filters):
         items.extend(page[key])
@@ -270,9 +266,7 @@ def run(ec2: Any, config: Config, now: datetime) -> dict[str, Any]:
         [{"Name": "status", "Values": ["available"]}],
     )
 
-    actions = plan(
-        config.project, instances, volumes, interfaces, now, config.max_lifetime
-    )
+    actions = plan(config.project, instances, volumes, interfaces, now, config.max_lifetime)
     dry_run = config.dry_run
     errors: list[dict[str, str]] = []
 
@@ -302,9 +296,7 @@ def run(ec2: Any, config: Config, now: datetime) -> dict[str, Any]:
         )
         record("mark-interface", interface_id, code)
     for interface_id in actions.delete_interfaces:
-        code = _call(
-            ec2.delete_network_interface, dry_run, NetworkInterfaceId=interface_id
-        )
+        code = _call(ec2.delete_network_interface, dry_run, NetworkInterfaceId=interface_id)
         record("delete-interface", interface_id, code)
 
     summary = {
@@ -325,8 +317,8 @@ def run(ec2: Any, config: Config, now: datetime) -> dict[str, Any]:
     return summary
 
 
-def handler(event: Any, context: Any) -> dict[str, Any]:
-    import boto3  # ty: ignore[unresolved-import]  # The Lambda runtime provides it.
+def handler(event: Any, context: Any) -> dict[str, Any]:  # noqa: ARG001 — the Lambda signature
+    import boto3  # The Lambda runtime provides it.
 
     logging.getLogger().setLevel(logging.INFO)
     config = Config.from_env(os.environ)
