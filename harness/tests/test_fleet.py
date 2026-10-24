@@ -156,5 +156,6 @@ def test_ensure_up_requires_the_key(config: Config) -> None:
     client = boto3.client(
         "ec2", region_name="us-west-2", aws_access_key_id="testing", aws_secret_access_key="testing"
     )
+    config.project["ssh_key"] = "/nonexistent/bench.pem"
     with pytest.raises(FileNotFoundError, match="SSH key"):
         ensure_up(Fleet(config, client), ["arm64"], "1h")
