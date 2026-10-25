@@ -1,11 +1,8 @@
 # IAM user and reaper for the baskingspot-bench fleet (modules/bench-iam).
 #
 # A human applies this stack with an IAM-capable profile (BENCH_BOOTSTRAP_PROFILE in .envrc.local).
-# write-credentials.sh then writes the access key to the baskingspot-bench
-# profile. docs/runbook.md is the operator documentation.
-#
-# terraform.tfstate holds the secret access key. It is gitignored. Do not
-# commit it and do not copy it off this machine.
+# The person then adds a role profile to ~/.aws/config; no key is written.
+# docs/runbook.md is the operator documentation.
 
 terraform {
   required_version = ">= 1.12"
@@ -71,21 +68,7 @@ module "bench" {
 
 # The resources were created at the root before the module existed.
 moved {
-  from = aws_iam_user.bench
-  to   = module.bench.aws_iam_user.bench
-}
-
-moved {
   from = aws_iam_policy.bench
   to   = module.bench.aws_iam_policy.bench
 }
 
-moved {
-  from = aws_iam_user_policy_attachment.bench
-  to   = module.bench.aws_iam_user_policy_attachment.bench
-}
-
-moved {
-  from = aws_iam_access_key.bench
-  to   = module.bench.aws_iam_access_key.bench
-}

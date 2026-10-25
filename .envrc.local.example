@@ -4,8 +4,8 @@
 # The 12-digit AWS account ID. The stacks refuse every other account.
 export TF_VAR_account_id=000000000000
 
-# The AWS SSO profile of a human who can create IAM users. It applies stacks/iam.
+# The AWS SSO profile of a human who can create IAM roles. It applies stacks/iam.
 export BENCH_BOOTSTRAP_PROFILE=your-sso-profile
 
-# The profile that stacks/base and the harness use. write-credentials.sh creates it.
+# The role profile that stacks/base and the harness use. The runbook shows how to add it.
 # export AWS_PROFILE=baskingspot-bench

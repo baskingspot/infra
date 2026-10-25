@@ -7,15 +7,14 @@ and `region` values, `image_version`, and the stack outputs.
 
 ## Layout
 
-| Path                              | Content                                                                                    | Who applies it                        |
-| --------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------- |
-| `stacks/iam/`                     | Root stack: the IAM user, its EC2 policy, one access key, and the reaper                   | A human                               |
-| `stacks/iam/write-credentials.sh` | Writes the access key to `~/.aws/credentials`                                              | A human                               |
-| `stacks/base/`                    | Root stack: security group, key pair, launch templates                                     | The bench profile                     |
-| `stacks/base/image.nix`           | An example project NixOS module that the box configuration imports                         | `stacks/base/` puts it in `user_data` |
-| `modules/bench-iam/`              | Module: `policy.tf` (the user policy), `reaper.tf` and `reaper/` (the reaper)              | `stacks/iam/` uses it                 |
-| `modules/bench-base/`             | Module: launch templates, and `image.nix.tftpl` (the box configuration with the TTL guard) | `stacks/base/` uses it                |
-| `harness/`                        | The Python package `ec2bench`: the fleet commands and the adapter contract                 | A consumer pins a tag of it           |
+| Path                    | Content                                                                                    | Who applies it                        |
+| ----------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------- |
+| `stacks/iam/`           | Root stack: the IAM role, its EC2 policy, and the reaper                                   | A human                               |
+| `stacks/base/`          | Root stack: security group, key pair, launch templates                                     | The bench profile                     |
+| `stacks/base/image.nix` | An example project NixOS module that the box configuration imports                         | `stacks/base/` puts it in `user_data` |
+| `modules/bench-iam/`    | Module: `policy.tf` (the user policy), `reaper.tf` and `reaper/` (the reaper)              | `stacks/iam/` uses it                 |
+| `modules/bench-base/`   | Module: launch templates, and `image.nix.tftpl` (the box configuration with the TTL guard) | `stacks/base/` uses it                |
+| `harness/`              | The Python package `ec2bench`: the fleet commands and the adapter contract                 | A consumer pins a tag of it           |
 
 ## Configuration
 
@@ -43,13 +42,13 @@ fast path.
 | Mechanism | Where it runs                        | Who controls it                      |
 | --------- | ------------------------------------ | ------------------------------------ |
 | Reaper    | A Lambda function, outside the boxes | The `stacks/iam/` stack (a human)    |
-| TTL guard | Each box, from the launch template   | The bench user (a human or an agent) |
+| TTL guard | Each box, from the launch template   | The bench role (a human or an agent) |
 
-The bench user writes the launch templates. Thus it controls the
+The bench role writes the launch templates. Thus it controls the
 `user_data`, the shutdown behavior, and the metadata options of a box. It
 can also write any `ExpiresAt` value. So a box without the TTL guard, or
 with a very late `ExpiresAt`, is possible. The reaper does not depend on
-the box or on the bench user.
+the box or on the bench role.
 
 EventBridge runs the reaper every 5 minutes. The reaper terminates each
 instance with the project `Project` tag if one of these conditions is true:
@@ -82,8 +81,8 @@ The IAM policy keeps each resource visible to the reaper:
 - The tag keys must have the exact case. IAM compares the key of
   `aws:RequestTag/Project` without case. Without an `aws:TagKeys` condition,
   a `PROJECT` tag passes the policy, and exact filters do not find it.
-- The bench user cannot delete `Project` or `ExpiresAt`, in any case.
-- The bench user cannot stop or start an instance. A stopped box does not
+- The bench role cannot delete `Project` or `ExpiresAt`, in any case.
+- The bench role cannot stop or start an instance. A stopped box does not
   run its TTL guard, and a start resets `LaunchTime`.
 
 The reaper finds the `Project` key in any case. It reads `ExpiresAt` only
@@ -115,21 +114,30 @@ SSO profile.
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws ec2 delete-security-group --region us-west-2 --group-id <id>
    ```
 
-4. Apply the IAM stack. It creates the user, the policy, the access key,
-   and the reaper.
+4. Apply the IAM stack. It creates the role, the policy, and the reaper.
 
    ```sh
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/iam init
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/iam apply
    ```
 
-5. Write the credentials profile:
+5. Add the role profile to `~/.aws/config`. The role is assumed from the
+   SSO session, so no key is stored:
 
    ```sh
-   stacks/iam/write-credentials.sh
+   aws configure set role_arn "$(tofu -chdir=stacks/iam output -raw role_arn)" \
+     --profile baskingspot-bench
+   aws configure set source_profile "$BENCH_BOOTSTRAP_PROFILE" \
+     --profile baskingspot-bench
+   aws configure set region us-west-2 --profile baskingspot-bench
    ```
 
-6. Wait 10 seconds. A new access key is not valid immediately.
+6. Log in to the source profile. The SSO session lasts as long as the
+   organization allows, and the role credentials refresh themselves:
+
+   ```sh
+   aws sso login --profile $BENCH_BOOTSTRAP_PROFILE
+   ```
 
 7. Make sure that the profile works:
 
@@ -137,7 +145,8 @@ SSO profile.
    AWS_PROFILE=baskingspot-bench aws sts get-caller-identity
    ```
 
-   The `Arn` field must be `arn:aws:iam::$TF_VAR_account_id:user/baskingspot-bench`.
+   The `Arn` field must be
+   `arn:aws:sts::$TF_VAR_account_id:assumed-role/baskingspot-bench/...`.
 
 8. Do the procedure "Make sure that the reaper runs".
 
@@ -354,19 +363,14 @@ The box configuration has two parts:
 1. Edit `instance_families` in `stacks/iam/main.tf`.
 2. Do the procedure "Change the IAM stack".
 
-## Rotate the access key
+## Refresh the session
 
-1. Replace the key:
+The bench role has no key to rotate. Its credentials last one hour and refresh
+while the SSO session is valid. When a command fails with an expired token:
 
-   ```sh
-   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/iam apply -replace=module.bench.aws_iam_access_key.bench
-   ```
-
-2. Write the credentials profile again:
-
-   ```sh
-   stacks/iam/write-credentials.sh
-   ```
+```sh
+aws sso login --profile $BENCH_BOOTSTRAP_PROFILE
+```
 
 ## Tear down
 
@@ -388,7 +392,7 @@ The box configuration has two parts:
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/iam destroy
    ```
 
-4. Remove the `[baskingspot-bench]` section from `~/.aws/credentials`, and
+4. Remove the `[profile baskingspot-bench]` block from `~/.aws/config`, and
    remove `~/.ssh/baskingspot-bench.pem`.
 
 ## Test the modules offline
@@ -404,9 +408,9 @@ tofu -chdir=modules/bench-base test
 uv run pytest modules/bench-iam/reaper -v
 ```
 
-The `bench-iam` tests fail if the user policy is longer than 6,144
+The `bench-iam` tests fail if the role policy is longer than 6,144
 characters, the limit of a managed policy. If that occurs, split the policy
-into two managed policies on the user.
+into two managed policies on the role.
 
 ## The TTL guard
 
@@ -436,7 +440,7 @@ journalctl -u bench-ttl-guard.service
 ## The IAM policy
 
 `modules/bench-iam/policy.tf` has one comment for each statement. The
-`Project` tag is the security boundary. The bench user can do these things:
+`Project` tag is the security boundary. The bench role can do these things:
 
 - Describe and get all EC2 resources in `us-west-2`.
 - Launch On-Demand instances from a project launch template. The request

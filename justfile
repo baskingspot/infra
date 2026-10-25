@@ -24,8 +24,6 @@ lint:
     uv run ruff format --check harness modules/bench-iam/reaper
     uv run ty check harness modules/bench-iam/reaper
     uv lock --check
-    shfmt -d stacks/iam/write-credentials.sh
-    shellcheck stacks/iam/write-credentials.sh
     nix fmt -- --ci
     oxfmt --check README.md AGENTS.md docs harness .github
     actionlint
@@ -37,7 +35,6 @@ lint:
 fmt:
     tofu fmt -recursive
     uv run ruff format harness modules/bench-iam/reaper
-    shfmt -w stacks/iam/write-credentials.sh
     nix fmt
     oxfmt README.md AGENTS.md docs harness .github
     just --fmt

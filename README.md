@@ -13,7 +13,7 @@ The default fleet is `baskingspot-bench`, in `us-west-2`. Nothing in this repo i
 
 | Path                  | Content                                                                                                                                                                                          |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `modules/bench-iam/`  | The IAM user and its policy, and the reaper: a Lambda that terminates any project instance past its `ExpiresAt` tag or its maximum lifetime, and deletes orphaned volumes and network interfaces |
+| `modules/bench-iam/`  | The IAM role and its policy, and the reaper: a Lambda that terminates any project instance past its `ExpiresAt` tag or its maximum lifetime, and deletes orphaned volumes and network interfaces |
 | `modules/bench-base/` | The security group, the key pair, one launch template per architecture, and the NixOS box configuration with a TTL guard                                                                         |
 | `stacks/iam/`         | The root stack that applies `bench-iam`. A human applies it                                                                                                                                      |
 | `stacks/base/`        | The root stack that applies `bench-base`. The bench profile applies it                                                                                                                           |
