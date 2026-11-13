@@ -1,14 +1,19 @@
 # bench-base: the durable resources of a tag-scoped EC2 benchmark fleet.
 #
-# It creates the SSH security group, the key pair, and one launch template
-# for each architecture. A harness (ec2bench) finds the launch templates by
-# name and project tag, and launches and terminates instances from them. The
-# bench user that the bench-iam module creates, for the same project, can
-# apply this module.
+# It creates an egress-only security group and one launch template for each
+# architecture. A harness (ec2bench) finds the launch templates by name and
+# project tag, and launches and terminates instances from them. A person
+# applies this module. The bench role of the bench-iam module can launch from
+# these templates but cannot change them, so the TTL guard in the user_data
+# stays on every box.
+#
+# No port is open to the internet and no key pair exists. SSH reaches a box
+# through an SSM session, with a key that EC2 Instance Connect pushes for 60
+# seconds. The instance profile from bench-iam lets the SSM agent register.
 #
 # The caller owns the provider configuration. Its default_tags must put
-# Project = var.project on every resource: the bench-iam policy requires the
-# tag in each create request.
+# Project = var.project on every resource: the bench-iam policy and the
+# reaper find resources by that tag.
 
 terraform {
   required_version = ">= 1.12"
@@ -18,21 +23,14 @@ terraform {
       source  = "hashicorp/aws"
       version = ">= 6.66"
     }
-    tls = {
-      source  = "hashicorp/tls"
-      version = ">= 4.4"
-    }
-    local = {
-      source  = "hashicorp/local"
-      version = ">= 2.9"
-    }
   }
 }
 
 locals {
   user_data = templatefile("${path.module}/image.nix.tftpl", {
-    image_version = var.image_version
-    nixos_module  = var.nixos_module
+    image_version      = var.image_version
+    max_lifetime_hours = var.max_lifetime_hours
+    nixos_module       = var.nixos_module
   })
 }
 
@@ -58,18 +56,12 @@ data "aws_ami" "pinned" {
   }
 }
 
-resource "aws_security_group" "ssh" {
-  name        = "${var.project}-ssh"
-  description = "SSH to ${var.project} boxes"
+# Egress only. The boxes keep a public IP for outbound traffic (the NixOS
+# cache, the SSM endpoints), and nothing can connect in.
+resource "aws_security_group" "box" {
+  name        = "${var.project}-box"
+  description = "Egress only for ${var.project} boxes"
   vpc_id      = data.aws_vpc.default.id
-
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = var.ssh_ingress_cidrs
-  }
 
   egress {
     description = "All outbound traffic"
@@ -78,21 +70,6 @@ resource "aws_security_group" "ssh" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-}
-
-resource "tls_private_key" "ssh" {
-  algorithm = "ED25519"
-}
-
-resource "aws_key_pair" "bench" {
-  key_name   = var.project
-  public_key = tls_private_key.ssh.public_key_openssh
-}
-
-resource "local_sensitive_file" "ssh_key" {
-  content         = tls_private_key.ssh.private_key_openssh
-  filename        = var.key_file
-  file_permission = "0600"
 }
 
 locals {
@@ -116,8 +93,12 @@ resource "aws_launch_template" "bench" {
   description = "${var.project} box (${each.key})"
 
   image_id               = data.aws_ami.pinned[each.key].id
-  key_name               = aws_key_pair.bench.key_name
-  vpc_security_group_ids = [aws_security_group.ssh.id]
+  vpc_security_group_ids = [aws_security_group.box.id]
+
+  # The box role grants the SSM agent its registration and nothing else.
+  iam_instance_profile {
+    name = var.instance_profile_name
+  }
 
   # The TTL guard on the box runs poweroff. Terminate, not stop, so that an
   # expired box costs nothing.

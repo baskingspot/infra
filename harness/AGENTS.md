@@ -12,17 +12,23 @@ adds this package as a git dependency on a tag of this repository.
 Breaking any of these names needs a new minor version and a change in every
 consumer:
 
-- `Config.load`, `root`, `results_dir`, `cache_dir`, `ssh_key`, `ttl`,
-  `select`.
+- `Config.load`, `root`, `results_dir`, `cache_dir`, `ttl`, `select`.
 - `Fleet(config)`: `instances`, `selected`, `launch`, `terminate`, `extend`,
-  `reap`, `outputs`, `templates`, `one`, `key_path`, `wait_running`,
-  `converge`; the module functions `tags`, `expiry`, `reap_candidates`.
-  `outputs()` is resolved from AWS and the configuration; it reads no OpenTofu
-  state, even though the name suggests it does.
+  `reap`, `outputs`, `templates`, `one`, `wait_running`, `converge`,
+  `push_key`, `profile`; the module functions `tags`, `expiry`,
+  `reap_candidates`. `outputs()` is resolved from AWS and the configuration;
+  it reads no OpenTofu state, even though the name suggests it does.
 - `Box`, `RemoteError`: `run`, `upload`, `upload_contents`, `download`,
-  `ready`, `shell`.
+  `ready`, `shell`, `poweroff`, `connect`.
 - `cli.box_for`, `cli.ensure_up`, `cli.console`. The adapters import these;
   they are not private even though they live in the command module.
+  `box_for(fleet, instance)` takes an optional third argument, `outputs`, that
+  it ignores, so adapters written for v0.1 still call it.
+
+v0.2.0 removed `Config.ssh_key`, `Fleet.key_path`, and `outputs()["key_file"]`,
+and changed the `Box` constructor: SSH goes through SSM with an EC2 Instance
+Connect key, and no key file or public IP exists.
+
 - `parallel`, `Outcome`, `progress`, `check_cancelled`, `runs.watch`,
   `runs.create_run`, `runs.write_manifest`, `runs.git`, `runs.validate_label`,
   `facts.collect`, `facts.topology`, `isolation.isolate`, `run_isolated`,
@@ -46,7 +52,13 @@ and drops the basename. Both exist because the two adapters use the two shapes.
 - The harness launches from launch templates only. Do not add a path that
   creates an `aws_instance`.
 - A new tag key needs a policy change in `modules/bench-iam/policy.tf`, and
-  `Project` and `ExpiresAt` stay immutable on the user side.
+  `Project` and `ExpiresAt` stay immutable on the role side.
+- SSH goes through `ec2bench.ssm` as the ProxyCommand. Do not add a path that
+  needs a public IP, an open port, or a key file. The ProxyCommand writes the
+  SSH stream to stdout. Nothing in it must print there.
+- A `Box` opens one control master per box with `ControlPersist=yes`. Later
+  commands make no AWS call. Keep that: it is what lets a long run outlive
+  the SSO session.
 - `ExpiresAt` is written as `%Y-%m-%dT%H:%M:%SZ`. The reaper and the TTL guard
   both parse that form; a different form ends the instance early.
 - `up` reaps before it launches. Keep that order.

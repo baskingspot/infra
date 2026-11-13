@@ -17,22 +17,21 @@ from ec2bench.facts import collect
 from ec2bench.fleet import Fleet, expiry, tags
 from ec2bench.parallel import Outcome, parallel, progress
 from ec2bench.runs import watch as watch_run
+from ec2bench.ssm import plugin
 
 console = Console()
 
 
-def box_for(fleet: Fleet, instance: dict[str, Any], outputs: dict[str, Any]) -> Box:
-    key = fleet.key_path(outputs)
-    if not key.exists():
-        raise FileNotFoundError(f"SSH key {key} does not exist")
-    host = instance.get("PublicIpAddress")
-    if not host:
-        raise ValueError(f"No public IP for {instance['InstanceId']}")
+def box_for(fleet: Fleet, instance: dict[str, Any], outputs: dict[str, Any] | None = None) -> Box:
+    """A Box for one instance. outputs is unused; it stays for the adapters that pass it."""
+    del outputs
+    instance_id = instance["InstanceId"]
     return Box(
-        instance["InstanceId"],
-        host,
-        key,
+        instance_id,
         fleet.config.cache_dir / "ssh",
+        region=fleet.config.project["region"],
+        profile=fleet.profile,
+        push=lambda user, key: fleet.push_key(instance_id, user, key),
         user=fleet.config.project.get("ssh_user", "root"),
     )
 
@@ -41,8 +40,7 @@ def ensure_up(
     fleet: Fleet, names: list[str], ttl: str | None = None, size: str | None = None
 ) -> dict[str, Outcome[str]]:
     fleet.config.ttl(ttl or fleet.config.fleet["default_ttl"])
-    if not fleet.config.ssh_key.exists():
-        raise FileNotFoundError(f"SSH key {fleet.config.ssh_key} does not exist")
+    plugin()
     outputs = fleet.outputs()
 
     def launch(name: str) -> str:

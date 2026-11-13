@@ -1,10 +1,11 @@
 # The reaper: the lifetime guarantee of the fleet.
 #
-# The bench user writes the launch templates, so it controls what runs on a
-# box, the TTL guard included, and it can write any ExpiresAt value. This
-# Lambda function runs outside the boxes with its own role. The bench user
-# cannot change it: the bench policy grants no Lambda, EventBridge, IAM, or
-# CloudWatch Logs action.
+# The TTL guard on a box does not run when the first boot fails, and the
+# bench role can write any ExpiresAt value. This Lambda function runs outside
+# the boxes with its own role and its own credentials, so it works when no
+# person is signed in. The bench role cannot change it: its policies grant no
+# Lambda, EventBridge, CloudWatch Logs, or IAM action except PassRole for the
+# box role.
 #
 # EventBridge invokes the function every 5 minutes. reaper/reaper.py holds
 # the rules, and reaper/test_reaper.py tests them.
@@ -57,8 +58,8 @@ locals {
       },
       {
         # ModifyInstanceAttribute removes termination protection
-        # (DisableApiTermination), which a launch template or a request of the
-        # bench user can set.
+        # (DisableApiTermination), which a RunInstances request of the bench
+        # role can set.
         Sid       = "TerminateProjectInstances"
         Effect    = "Allow"
         Action    = ["ec2:TerminateInstances", "ec2:ModifyInstanceAttribute"]

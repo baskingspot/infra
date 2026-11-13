@@ -1,12 +1,9 @@
 # Durable fleet resources for baskingspot-bench (modules/bench-base).
 #
-# The bench profile (baskingspot-bench) applies this stack. The harness finds
-# the launch templates by name and project tag and reads no state from here.
-# docs/runbook.md is the operator documentation.
-#
-# terraform.tfstate holds the box private key. It is gitignored. Do not commit
-# it and do not copy it off this machine. The apply also writes the key to
-# ~/.ssh/<project>.pem, which is where the harness looks for it.
+# A person applies this stack with the bootstrap profile, after stacks/iam.
+# The bench role cannot: it can launch from the launch templates but not
+# change them. The harness finds the launch templates by name and project tag
+# and reads no state from here. docs/runbook.md is the operator documentation.
 
 terraform {
   required_version = ">= 1.12"
@@ -15,14 +12,6 @@ terraform {
     aws = {
       source  = "hashicorp/aws"
       version = "~> 6.66"
-    }
-    tls = {
-      source  = "hashicorp/tls"
-      version = "~> 4.4"
-    }
-    local = {
-      source  = "hashicorp/local"
-      version = "~> 2.9"
     }
   }
 }
@@ -53,8 +42,8 @@ locals {
 }
 
 # Credentials come from AWS_PROFILE in the environment. default_tags puts
-# Project and ManagedBy on every resource, in the create request itself. The
-# bench-iam policy requires that.
+# Project and ManagedBy on every resource. The reaper and the bench-iam policy
+# find resources by the Project tag.
 provider "aws" {
   region              = local.region
   allowed_account_ids = [local.account_id]
@@ -80,33 +69,9 @@ module "bench" {
   }
 
   # Keep equal to project.image_version in bench.toml.
-  image_version = "1"
+  image_version = "2"
   nixos_module  = file("${path.module}/image.nix")
-  key_file      = pathexpand("~/.ssh/${local.project}.pem")
-}
 
-# The resources were created at the root before the module existed.
-moved {
-  from = aws_security_group.ssh
-  to   = module.bench.aws_security_group.ssh
-}
-
-moved {
-  from = tls_private_key.ssh
-  to   = module.bench.tls_private_key.ssh
-}
-
-moved {
-  from = aws_key_pair.bench
-  to   = module.bench.aws_key_pair.bench
-}
-
-moved {
-  from = local_sensitive_file.ssh_key
-  to   = module.bench.local_sensitive_file.ssh_key
-}
-
-moved {
-  from = aws_launch_template.bench
-  to   = module.bench.aws_launch_template.bench
+  # Created by stacks/iam (module bench-iam), which names it <project>-box.
+  instance_profile_name = "${local.project}-box"
 }

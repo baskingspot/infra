@@ -220,8 +220,8 @@ def _call(fn: Callable[..., Any], dry_run: bool, **kwargs: Any) -> str | None:
 def _terminate(ec2: Any, instance_id: str, dry_run: bool) -> str | None:
     code = _call(ec2.terminate_instances, dry_run, InstanceIds=[instance_id])
     if code == "OperationNotPermitted":
-        # Termination protection. The bench user can set it with
-        # DisableApiTermination in a launch template or a request.
+        # Termination protection. The bench role can set it with
+        # DisableApiTermination in a RunInstances request.
         code = _call(
             ec2.modify_instance_attribute,
             dry_run,

@@ -6,7 +6,7 @@ the image marker, and keeps every instance inside a deadline. The project's
 adapter supplies the benchmark commands.
 
 The package holds no benchmark-specific code. The Terraform that creates the IAM
-user, the reaper, the launch templates, and the box image lives in this
+roles, the reaper, the launch templates, and the box image lives in this
 repository. `../docs/runbook.md` covers the AWS side.
 
 ## Install
@@ -14,7 +14,7 @@ repository. `../docs/runbook.md` covers the AWS side.
 In a project that runs benchmarks:
 
 ```sh
-uv add "ec2bench @ git+https://github.com/baskingspot/infra@v0.1.0#subdirectory=harness"
+uv add "ec2bench @ git+https://github.com/baskingspot/infra@v0.2.0#subdirectory=harness"
 ```
 
 Or pin the tag in `pyproject.toml`:
@@ -27,7 +27,7 @@ dependencies = ["ec2bench"]
 bench = "ec2bench.cli:main"
 
 [tool.uv.sources]
-ec2bench = { git = "https://github.com/baskingspot/infra", rev = "v0.1.0", subdirectory = "harness" }
+ec2bench = { git = "https://github.com/baskingspot/infra", rev = "v0.2.0", subdirectory = "harness" }
 ```
 
 The project owns the command name. The library exports `main` and the adapter
@@ -45,7 +45,7 @@ name = "baskingspot-bench"
 region = "us-west-2"
 profile = "baskingspot-bench"
 adapter = "example_bench"
-image_version = "1"
+image_version = "2"
 ssh_user = "root"
 results_dir = "bench-results"
 cache_dir = ".bench-cache"
@@ -65,9 +65,15 @@ arch = "x86_64"
 
 The harness needs no checkout of the infrastructure repository and no OpenTofu
 state. It finds the launch template for each architecture by name,
-`<project.name>-<arch>`, and checks the `Project` tag. It reads the SSH key from
-`~/.ssh/<project.name>.pem`, which the base stack writes. Set `ssh_key` to use
-another path.
+`<project.name>-<arch>`, and checks the `Project` tag.
+
+SSH needs no key file and no open port. For each new connection the harness
+pushes a key with EC2 Instance Connect, which the box accepts for 60 seconds,
+and connects through an SSM session. The devshell must provide
+`session-manager-plugin` (`ssm-session-manager-plugin` in nixpkgs). The first
+connection opens a control master, and later commands reuse it with no AWS
+call. The IAM policy allows the key for `root` only, so keep `ssh_user` at
+`root`.
 
 The architecture is `x86_64` or `arm64`. Unknown keys belong to the adapter.
 `AWS_PROFILE` overrides `project.profile`. `up` and `extend` reject a TTL above
@@ -112,20 +118,19 @@ SSH. `parallel` returns one outcome per task, so one failed target does not
 cancel the others.
 
 ```python
-from ec2bench.box import Box
+from ec2bench.cli import box_for
 from ec2bench.fleet import Fleet
 
 fleet = Fleet(config)
-outputs = fleet.outputs()
 instance = fleet.one("c7i")
-box = Box(
-    instance["InstanceId"],
-    instance["PublicIpAddress"],
-    fleet.key_path(outputs),
-    config.cache_dir / "ssh",
-)
+box = box_for(fleet, instance)
 box.run("uname -a")
 ```
+
+`box_for` (in `ec2bench.cli`) builds the `Box` with the SSM proxy and the key
+push. `box.poweroff()` ends a box from inside: the launch template sets the
+shutdown behavior to terminate, so the box terminates with no AWS call. It
+works over an open control master after the AWS session has expired.
 
 `facts.collect(box, config.results_dir)` caches the CPU, topology, kernel, and
 image facts under `results_dir/.facts/`. If a probe fails, its value is null and
@@ -191,5 +196,5 @@ terminates the duplicates it discovers. `ls` flags a duplicate target.
 
 The harness launches from launch templates only; it does not adopt
 `aws_instance` resources. One instance per target. There is no placement-group
-selection, no second client box, no SSH over a private address, no CPU isolation
+selection, no second client box, no SSH except through SSM, no CPU isolation
 without systemd, and no privilege escalation.

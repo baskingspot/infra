@@ -7,14 +7,14 @@ and `region` values, `image_version`, and the stack outputs.
 
 ## Layout
 
-| Path                    | Content                                                                                    | Who applies it                        |
-| ----------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------- |
-| `stacks/iam/`           | Root stack: the IAM role, its EC2 policy, and the reaper                                   | A human                               |
-| `stacks/base/`          | Root stack: security group, key pair, launch templates                                     | The bench profile                     |
-| `stacks/base/image.nix` | An example project NixOS module that the box configuration imports                         | `stacks/base/` puts it in `user_data` |
-| `modules/bench-iam/`    | Module: `policy.tf` (the user policy), `reaper.tf` and `reaper/` (the reaper)              | `stacks/iam/` uses it                 |
-| `modules/bench-base/`   | Module: launch templates, and `image.nix.tftpl` (the box configuration with the TTL guard) | `stacks/base/` uses it                |
-| `harness/`              | The Python package `ec2bench`: the fleet commands and the adapter contract                 | A consumer pins a tag of it           |
+| Path                    | Content                                                                                                         | Who applies it                        |
+| ----------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `stacks/iam/`           | Root stack: the bench role, the box role, their policies, and the reaper                                        | A human                               |
+| `stacks/base/`          | Root stack: the egress-only security group and the launch templates                                             | A human                               |
+| `stacks/base/image.nix` | An example project NixOS module that the box configuration imports                                              | `stacks/base/` puts it in `user_data` |
+| `modules/bench-iam/`    | Module: `policy.tf` (the bench role policies), `box.tf` (the box role), `reaper.tf` and `reaper/` (the reaper)  | `stacks/iam/` uses it                 |
+| `modules/bench-base/`   | Module: launch templates, and `image.nix.tftpl` (the box configuration: the TTL guard and EC2 Instance Connect) | `stacks/base/` uses it                |
+| `harness/`              | The Python package `ec2bench`: the fleet commands, SSH through SSM, and the adapter contract                    | A consumer pins a tag of it           |
 
 ## Configuration
 
@@ -33,22 +33,48 @@ must not follow a file that the agent edits.
 - Run each command from the repository root.
 - Run each tool from the devshell. Enter it with `nix develop`, or put
   `nix develop -c` before each command.
+- The devshell of a project that runs the harness must provide
+  `ssm-session-manager-plugin` from nixpkgs. SSH to a box goes through it.
+
+## The SSH path
+
+No box accepts inbound traffic. The security group has no inbound rule, and
+no key pair exists. A box keeps a public IP for outbound traffic only.
+
+The harness reaches a box in three steps:
+
+1. `ec2-instance-connect:SendSSHPublicKey` puts a public key in the instance
+   metadata. The box accepts the key for 60 seconds.
+2. `ssm:StartSession` with the `AWS-StartSSHSession` document opens a
+   session. The SSM agent on the box connects out to AWS and forwards the
+   session to `localhost:22`.
+3. `ssh` authenticates with the key. sshd gets the key from the EC2
+   Instance Connect scripts, which check the AWS signature first.
+
+The first connection opens an SSH control master. Later commands and `rsync`
+use the master and make no AWS call. A new master needs a valid AWS session.
 
 ## The lifetime guarantee
 
 Two mechanisms stop a box. The reaper is the guarantee. The TTL guard is the
 fast path.
 
-| Mechanism | Where it runs                        | Who controls it                      |
-| --------- | ------------------------------------ | ------------------------------------ |
-| Reaper    | A Lambda function, outside the boxes | The `stacks/iam/` stack (a human)    |
-| TTL guard | Each box, from the launch template   | The bench role (a human or an agent) |
+| Mechanism | Where it runs                        | Who controls it                    |
+| --------- | ------------------------------------ | ---------------------------------- |
+| Reaper    | A Lambda function, outside the boxes | The `stacks/iam/` stack (a human)  |
+| TTL guard | Each box, from the launch template   | The `stacks/base/` stack (a human) |
 
-The bench role writes the launch templates. Thus it controls the
-`user_data`, the shutdown behavior, and the metadata options of a box. It
-can also write any `ExpiresAt` value. So a box without the TTL guard, or
-with a very late `ExpiresAt`, is possible. The reaper does not depend on
-the box or on the bench role.
+The bench role cannot write the launch templates. But the TTL guard has
+these gaps:
+
+- The guard arrives in the `user_data`. If the first boot fails, the box
+  runs without the guard.
+- The bench role can write any `ExpiresAt` value. The guard caps the
+  lifetime at 24 hours after boot, but a reboot restarts that count.
+- A box that hangs cannot power itself off.
+
+The reaper does not depend on the box, on the bench role, or on an AWS
+session of a person.
 
 EventBridge runs the reaper every 5 minutes. The reaper terminates each
 instance with the project `Project` tag if one of these conditions is true:
@@ -81,7 +107,7 @@ The IAM policy keeps each resource visible to the reaper:
 - The tag keys must have the exact case. IAM compares the key of
   `aws:RequestTag/Project` without case. Without an `aws:TagKeys` condition,
   a `PROJECT` tag passes the policy, and exact filters do not find it.
-- The bench role cannot delete `Project` or `ExpiresAt`, in any case.
+- The bench role cannot delete tags.
 - The bench role cannot stop or start an instance. A stopped box does not
   run its TTL guard, and a start resets `LaunchTime`.
 
@@ -99,12 +125,12 @@ SSO profile.
    aws sso login --profile $BENCH_BOOTSTRAP_PROFILE
    ```
 
-2. Make sure that no old security group has the name `baskingspot-bench-ssh`
+2. Make sure that no old security group has the name `baskingspot-bench-box`
    in the default VPC:
 
    ```sh
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws ec2 describe-security-groups --region us-west-2 \
-     --filters Name=group-name,Values=baskingspot-bench-ssh --query 'SecurityGroups[].[GroupId,VpcId]'
+     --filters Name=group-name,Values=baskingspot-bench-box --query 'SecurityGroups[].[GroupId,VpcId]'
    ```
 
 3. If the command shows a group in the default VPC, and no instance uses
@@ -114,7 +140,8 @@ SSO profile.
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws ec2 delete-security-group --region us-west-2 --group-id <id>
    ```
 
-4. Apply the IAM stack. It creates the role, the policy, and the reaper.
+4. Apply the IAM stack. It creates the bench role, the box role, the
+   policies, and the reaper.
 
    ```sh
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/iam init
@@ -148,24 +175,32 @@ SSO profile.
    The `Arn` field must be
    `arn:aws:sts::$TF_VAR_account_id:assumed-role/baskingspot-bench/...`.
 
-8. Do the procedure "Make sure that the reaper runs".
+8. Do the procedure "Apply the base stack".
 
-9. Optional: check the policies with IAM Access Analyzer. Findings of type
-   `ERROR` or `SECURITY_WARNING` need a fix.
+9. Do the procedure "Make sure that the reaper runs".
 
-   ```sh
-   arn=$(tofu -chdir=stacks/iam output -raw policy_arn)
-   version=$(AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-policy --policy-arn "$arn" \
-     --query Policy.DefaultVersionId --output text)
-   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-policy-version --policy-arn "$arn" \
-     --version-id "$version" --query PolicyVersion.Document >/tmp/bench-policy.json
-   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
-     --policy-type IDENTITY_POLICY --policy-document file:///tmp/bench-policy.json
-   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-role-policy --role-name baskingspot-bench-reaper \
-     --policy-name baskingspot-bench-reaper --query PolicyDocument >/tmp/reaper-policy.json
-   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
-     --policy-type IDENTITY_POLICY --policy-document file:///tmp/reaper-policy.json
-   ```
+10. Optional: check the policies with IAM Access Analyzer. Findings of type
+    `ERROR` or `SECURITY_WARNING` need a fix.
+
+    ```sh
+    for output in policy_arn session_policy_arn; do
+      arn=$(tofu -chdir=stacks/iam output -raw $output)
+      version=$(AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-policy --policy-arn "$arn" \
+        --query Policy.DefaultVersionId --output text)
+      AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-policy-version --policy-arn "$arn" \
+        --version-id "$version" --query PolicyVersion.Document >/tmp/bench-policy.json
+      AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
+        --policy-type IDENTITY_POLICY --policy-document file:///tmp/bench-policy.json
+    done
+    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-role-policy --role-name baskingspot-bench-reaper \
+      --policy-name baskingspot-bench-reaper --query PolicyDocument >/tmp/reaper-policy.json
+    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
+      --policy-type IDENTITY_POLICY --policy-document file:///tmp/reaper-policy.json
+    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-role-policy --role-name baskingspot-bench-box \
+      --policy-name session-manager --query PolicyDocument >/tmp/box-policy.json
+    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
+      --policy-type IDENTITY_POLICY --policy-document file:///tmp/box-policy.json
+    ```
 
 ## Change the IAM stack
 
@@ -175,8 +210,7 @@ A change to `stacks/iam/` or to `modules/bench-iam/` needs a human.
    For example, the policy requires the `Project` tag on new network
    interfaces, and the launch template supplies it.
 
-2. Examine the plan. Make sure that it does not replace
-   `module.bench.aws_iam_access_key.bench`:
+2. Examine the plan:
 
    ```sh
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/iam plan
@@ -224,6 +258,33 @@ nothing. `DryRunOperation` means "allowed". `UnauthorizedOperation` means
      'ResourceType=instance,Tags=[{Key=PROJECT,Value=baskingspot-bench},{Key=ExpiresAt,Value=2030-01-01T00:00:00Z}]'
    ```
 
+## Make sure that SSH works
+
+1. Launch one box from a project checkout:
+
+   ```sh
+   uv run bench up <target> --ttl 1h
+   ```
+
+2. Run a command on the box. The output must be the kernel name and version:
+
+   ```sh
+   uv run bench ssh <target> -- uname -sr
+   ```
+
+3. Make sure that a plain shell session fails. The result must be
+   `AccessDeniedException`:
+
+   ```sh
+   AWS_PROFILE=baskingspot-bench aws ssm start-session --region us-west-2 --target <instance-id>
+   ```
+
+4. Terminate the box:
+
+   ```sh
+   uv run bench down <target>
+   ```
+
 ## Make sure that the reaper runs
 
 1. Wait 5 minutes after the apply.
@@ -267,13 +328,14 @@ the IAM stack.
 
 ## Apply the base stack
 
-The bench profile applies this stack. A human or an agent can do it.
+A human applies this stack with the bootstrap profile. The bench role can
+launch from the launch templates, but it cannot change them.
 
 1. Apply the stack:
 
    ```sh
-   AWS_PROFILE=baskingspot-bench tofu -chdir=stacks/base init
-   AWS_PROFILE=baskingspot-bench tofu -chdir=stacks/base apply
+   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/base init
+   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/base apply
    ```
 
 2. Make sure that the outputs exist:
@@ -282,30 +344,25 @@ The bench profile applies this stack. A human or an agent can do it.
    tofu -chdir=stacks/base output -json
    ```
 
-The apply writes the SSH private key to `~/.ssh/baskingspot-bench.pem` with
-mode `0600`, outside the repository. A consumer harness reads no state: it
-finds the launch templates by name (`<project>-<arch>`) and `Project` tag,
-and reads the key from `~/.ssh/<project>.pem`. Set `ssh_key` in `bench.toml`
-to use another path.
-
-An existing checkout can copy `stacks/base/bench.pem` to the new path instead
-of applying the stack again. The key does not change, only its location.
-Remove the old copy after the move.
+A consumer harness reads no state. It finds the launch templates by name
+(`<project>-<arch>`) and `Project` tag. It needs no key file: it pushes a key
+with EC2 Instance Connect for each new connection.
 
 The outputs are:
 
 | Output                | Value                                                           |
 | --------------------- | --------------------------------------------------------------- |
 | `launch_template_ids` | Map from architecture (`x86_64`, `arm64`) to launch template ID |
-| `key_file`            | Absolute path of the SSH key                                    |
-| `security_group_id`   | ID of the SSH security group                                    |
+| `security_group_id`   | ID of the egress-only security group                            |
+| `user_data`           | The rendered NixOS configuration of the boxes                   |
 
 ## Change the box image
 
 The box configuration has two parts:
 
 - `modules/bench-base/image.nix.tftpl` holds the fleet contract: the TTL
-  guard, nix-ld, the benchmark sysctls, and `/etc/bench-image`.
+  guard, the SSM agent, EC2 Instance Connect, nix-ld, the benchmark sysctls,
+  and `/etc/bench-image`.
 - `stacks/base/image.nix` holds the example project packages. The template imports it.
 
 1. Edit one of the two files.
@@ -366,7 +423,9 @@ The box configuration has two parts:
 ## Refresh the session
 
 The bench role has no key to rotate. Its credentials last one hour and refresh
-while the SSO session is valid. When a command fails with an expired token:
+while the SSO session is valid. A new SSH connection needs a valid session.
+An open control master makes no AWS call. When a command fails with an
+expired token:
 
 ```sh
 aws sso login --profile $BENCH_BOOTSTRAP_PROFILE
@@ -383,7 +442,7 @@ aws sso login --profile $BENCH_BOOTSTRAP_PROFILE
 2. Destroy the base stack:
 
    ```sh
-   AWS_PROFILE=baskingspot-bench tofu -chdir=stacks/base destroy
+   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/base destroy
    ```
 
 3. Destroy the IAM stack. This step also removes the reaper, so do it last.
@@ -392,8 +451,7 @@ aws sso login --profile $BENCH_BOOTSTRAP_PROFILE
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/iam destroy
    ```
 
-4. Remove the `[profile baskingspot-bench]` block from `~/.aws/config`, and
-   remove `~/.ssh/baskingspot-bench.pem`.
+4. Remove the `[profile baskingspot-bench]` block from `~/.aws/config`.
 
 ## Test the modules offline
 
@@ -408,9 +466,9 @@ tofu -chdir=modules/bench-base test
 uv run pytest modules/bench-iam/reaper -v
 ```
 
-The `bench-iam` tests fail if the role policy is longer than 6,144
-characters, the limit of a managed policy. If that occurs, split the policy
-into two managed policies on the role.
+The `bench-iam` tests fail if a policy of the bench role is longer than
+6,144 characters, the limit of a managed policy. If that occurs, move
+statements to a third managed policy on the role.
 
 ## The TTL guard
 
@@ -420,6 +478,9 @@ lifetime guarantee".
 Every box runs `bench-ttl-guard.timer` one time each minute. The service
 gets an IMDSv2 token and reads the `ExpiresAt` instance tag from
 `http://169.254.169.254/latest/meta-data/tags/instance/ExpiresAt`.
+
+- If the box is older than `max_lifetime_hours` since boot, the guard runs
+  `poweroff` and reads no tag. The default is 24 hours.
 
 - If the tag is an RFC 3339 UTC time, the guard uses it.
 - If the tag is absent or has a different format, the guard uses boot time
@@ -437,10 +498,13 @@ systemctl list-timers bench-ttl-guard.timer
 journalctl -u bench-ttl-guard.service
 ```
 
-## The IAM policy
+## The IAM policies
 
 `modules/bench-iam/policy.tf` has one comment for each statement. The
-`Project` tag is the security boundary. The bench role can do these things:
+`Project` tag is the security boundary. The bench role has two managed
+policies.
+
+The EC2 policy allows these things:
 
 - Describe and get all EC2 resources in `us-west-2`.
 - Launch On-Demand instances from a project launch template. The request
@@ -448,28 +512,39 @@ journalctl -u bench-ttl-guard.service
   `Project`, and the instance with `ExpiresAt`. A tag from the launch
   template also counts.
 - Use only the instance types in the allowlist, and only default tenancy.
-- Use the AMI, the security group, and the key pair of the launch template.
-  The AMI must come from the NixOS publisher.
+- Use the AMI and the security group of the launch template. The AMI must
+  come from the NixOS publisher. A request that names a key pair fails.
 - Create gp3 volumes of 100 GiB or smaller, with at most 3000 IOPS and
   125 MiB/s. These are the gp3 baseline values, which cost nothing extra.
-- Tag project resources with these keys only: `Project`, `ManagedBy`,
-  `Name`, `Target`, `ExpiresAt`, `Owner`. It cannot change the `Project`
-  value.
-- Remove tags from project resources, except `Project` and `ExpiresAt`.
+- Tag new instances, volumes, and network interfaces, and tag existing
+  project instances. The keys are `Project`, `ManagedBy`, `Name`, `Target`,
+  `ExpiresAt`, and `Owner` only. The `Project` value cannot change.
 - Terminate project instances. It cannot stop or start them.
-- Create, change, and delete the security group, the key pair, and the
-  launch templates of `stacks/base`. It can create security groups only in the
-  default VPC.
 
-The policy grants no IAM, S3, Lambda, or other service. It denies all
-actions outside `us-west-2`. The user has no `iam:PassRole`, so an instance
-cannot get an instance profile. The user cannot change the reaper.
+The EC2 policy cannot change a launch template, a security group, or a key
+pair. It cannot delete tags. It denies all actions outside `us-west-2`,
+except the global actions `sts:GetCallerIdentity` and `iam:PassRole`.
 
-The policy cannot control the `user_data`, the shutdown behavior, or the
-metadata options of a launch. The reaper covers these gaps.
+The session policy allows these things:
 
-The policy is a customer managed policy. IAM limits the inline policies of a
-user to 2,048 characters in total, and this policy is larger.
+- `iam:PassRole` for the box role, to EC2 only.
+- `ec2-instance-connect:SendSSHPublicKey` for `root` on project instances.
+- `ssm:StartSession` on project instances, with the `AWS-StartSSHSession`
+  document only. A plain shell session fails.
+
+The bench role cannot change the reaper, the box role, or its own policies.
+
+## The box role
+
+Every box has the instance profile `<project>-box`. Its role allows the
+minimal Session Manager actions and nothing else:
+
+- `ssm:UpdateInstanceInformation`
+- `ssmmessages:CreateControlChannel` and `ssmmessages:CreateDataChannel`
+- `ssmmessages:OpenControlChannel` and `ssmmessages:OpenDataChannel`
+
+The role has no EC2 action, so a box cannot terminate or change another
+instance. A box ends itself with `poweroff`, which needs no permission.
 
 ## The reaper role
 
@@ -511,6 +586,14 @@ The log group keeps logs for 30 days (`reaper_log_retention_days`).
 - If the base apply fails with `InvalidGroup.Duplicate`, do steps 2 and 3 of
   "Bootstrap the account".
 
+- If SSH to a box fails, make sure that the SSM agent registered. The
+  `PingStatus` must be `Online`. The agent needs a few minutes after boot.
+
+  ```sh
+  AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws ssm describe-instance-information --region us-west-2 \
+    --filters Key=InstanceIds,Values=<id> --query 'InstanceInformationList[].PingStatus'
+  ```
+
 ## Use it for a project
 
 1. Pick the fleet. The default is one org fleet named `baskingspot-bench`. A project that needs its own fleet sets another `project` value in both stacks.
@@ -520,7 +603,7 @@ The log group keeps logs for 30 days (`reaper_log_retention_days`).
 5. Do the procedures "Bootstrap the account" and "Apply the base stack".
 6. Add the harness to the project's `uv` project and pin a tag of this
    repository. `harness/README.md` has the install form and the adapter
-   contract.
+   contract. Add `ssm-session-manager-plugin` to the devshell of the project.
 7. Write `bench.toml` with the same `project` and `region`, and the
    `image_version` of the base stack. The harness needs no path to this
    repository.

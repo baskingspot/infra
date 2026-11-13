@@ -30,15 +30,20 @@ variable "nixos_module" {
   default     = "{ }"
 }
 
-variable "key_file" {
-  description = "Path of the SSH private key file that the module writes (mode 0600). Keep it out of version control."
+variable "instance_profile_name" {
+  description = "Instance profile of the boxes, from the bench-iam module of the same project. Its role lets the SSM agent register, which SSH needs."
   type        = string
 }
 
-variable "ssh_ingress_cidrs" {
-  description = "IPv4 CIDR blocks that can connect to port 22 of the boxes."
-  type        = list(string)
-  default     = ["0.0.0.0/0"]
+variable "max_lifetime_hours" {
+  description = "The TTL guard powers a box off this many hours after boot, whatever its ExpiresAt tag says. Keep it at or below the reaper_max_lifetime_hours of bench-iam and above fleet.max_ttl in bench.toml."
+  type        = number
+  default     = 24
+
+  validation {
+    condition     = var.max_lifetime_hours >= 1 && floor(var.max_lifetime_hours) == var.max_lifetime_hours
+    error_message = "max_lifetime_hours must be a whole number of hours, 1 or more."
+  }
 }
 
 variable "root_volume_gib" {

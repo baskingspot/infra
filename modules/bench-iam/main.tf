@@ -1,15 +1,20 @@
-# bench-iam: the IAM role and the reaper of a tag-scoped EC2 benchmark fleet.
+# bench-iam: the IAM roles and the reaper of a tag-scoped EC2 benchmark fleet.
 #
-# The role can launch, tag, and terminate only the EC2 resources that carry
-# Project = var.project, and it can apply the bench-base module for the same
-# project. policy.tf holds the policy and explains each statement. Nothing
-# holds a long-lived key: the role is assumed from an identity in the same
-# account, and its credentials last one hour.
+# The bench role can launch instances from the project launch templates,
+# tag and terminate the project instances, and open SSH to them through SSM
+# with a key that EC2 Instance Connect pushes for 60 seconds. It cannot
+# change the launch templates or the security group: a person applies
+# bench-base. policy.tf holds the policies and explains each statement.
+# Nothing holds a long-lived key: a person assumes the role from an SSO
+# session in the same account, and its credentials last one hour.
+#
+# The box role (box.tf) is the instance profile of every box. It lets the SSM
+# agent register and grants nothing else, so a box cannot act on EC2.
 #
 # The reaper (reaper.tf) is a scheduled Lambda function that terminates the
 # project instances past their lifetime. It is the lifetime guarantee. The
-# TTL guard on each box is only the fast path, because the user controls the
-# launch templates.
+# TTL guard on each box is the fast path. The guard cannot run when the
+# first boot fails, and the bench role can rewrite ExpiresAt.
 #
 # A human applies this module with an IAM-capable profile. The caller owns
 # the provider configuration (region, account guard, default tags).
@@ -27,11 +32,6 @@ terraform {
       version = ">= 2.8"
     }
   }
-}
-
-# The default VPC is the only VPC that the user can create security groups in.
-data "aws_vpc" "default" {
-  default = true
 }
 
 # Anyone in the account who is allowed sts:AssumeRole on this role can use it.
@@ -63,4 +63,18 @@ resource "aws_iam_policy" "bench" {
 resource "aws_iam_role_policy_attachment" "bench" {
   role       = aws_iam_role.bench.name
   policy_arn = aws_iam_policy.bench.arn
+}
+
+# A second managed policy for the SSH path: PassRole for the box role, SSM
+# sessions, and EC2 Instance Connect. It is separate so that the EC2 policy
+# stays EC2-only and both stay under the size limit.
+resource "aws_iam_policy" "session" {
+  name        = "${var.project}-session"
+  description = "SSH to the ${var.project} fleet through SSM and EC2 Instance Connect"
+  policy      = jsonencode(local.session_policy)
+}
+
+resource "aws_iam_role_policy_attachment" "session" {
+  role       = aws_iam_role.bench.name
+  policy_arn = aws_iam_policy.session.arn
 }

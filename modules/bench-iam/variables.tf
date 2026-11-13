@@ -1,10 +1,10 @@
 variable "project" {
-  description = "Fleet name. It names the IAM user and is the Project tag value that the policy requires. It must equal project.name in bench.toml."
+  description = "Fleet name. It names the IAM roles and is the Project tag value that the policy requires. It must equal project.name in bench.toml."
   type        = string
 }
 
 variable "region" {
-  description = "The only region that the user can act in."
+  description = "The only region that the bench role can act in."
   type        = string
 }
 

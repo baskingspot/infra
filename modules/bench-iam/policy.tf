@@ -1,17 +1,20 @@
-# The EC2 policy for the bench user.
+# The policies of the bench role: EC2 (local.policy) and the SSH session
+# (local.session_policy).
 #
-# The Project tag is the security boundary. The user can change only the
+# The Project tag is the security boundary. The role can change only the
 # resources that carry Project = var.project, and every resource that it
-# creates must carry that tag. The policy grants no IAM, S3, or other service,
-# so the user cannot escalate its own privileges. It also holds no
-# iam:PassRole, so it cannot launch an instance with an instance profile.
+# creates must carry that tag. The EC2 policy grants no other service. The
+# session policy grants iam:PassRole for the box role only, and that role
+# grants nothing beyond Session Manager, so the role cannot escalate its own
+# privileges.
 #
-# This policy does not guarantee the lifetime of an instance. The user can
-# write launch template versions, so it controls user_data, the shutdown
-# behavior, and the metadata options of its boxes, and it can set ExpiresAt
-# to any value. The reaper (reaper.tf) is the lifetime guarantee. This policy
-# keeps each resource visible to the reaper: exact tag keys, a Project tag
-# that cannot change or go away, and no StopInstances or StartInstances.
+# The role launches from the launch templates that a person applies with
+# bench-base, and it cannot write them. So the user_data, the TTL guard, the
+# shutdown behavior, and the metadata options come from that person. The
+# role can still set ExpiresAt to any value, which is why the reaper
+# (reaper.tf) is the lifetime guarantee. This policy keeps each resource
+# visible to the reaper: exact tag keys, a Project tag that cannot change,
+# no DeleteTags, and no StopInstances or StartInstances.
 #
 # RunInstances authorizes one ARN for each resource in the request: instance,
 # volume, network-interface, security-group, subnet, image, key-pair, and
@@ -37,13 +40,13 @@ locals {
   # template matches no statement.
   uses_launch_template = { "ec2:LaunchTemplate" = local.launch_templates }
 
-  # The tag keys that the user can write, with exact case. IAM compares the
+  # The tag keys that the role can write, with exact case. IAM compares the
   # tag key in aws:RequestTag/<key> and aws:ResourceTag/<key> without case,
   # so a request with PROJECT=<project> passes a Project condition, but the
   # tag:Project filter of DescribeInstances (the harness, the reaper) does
   # not find the resource. aws:TagKeys with StringEquals compares with case.
-  # Every statement that creates tags carries this condition. The default
-  # tags of the bench-base caller (Project, ManagedBy) are in the set.
+  # Every statement that creates tags carries this condition. The launch
+  # template tags (Project, ManagedBy) are in the set.
   canonical_tag_keys = {
     "aws:TagKeys" = ["Project", "ManagedBy", "Name", "Target", "ExpiresAt", "Owner"]
   }
@@ -53,10 +56,9 @@ locals {
     Statement = [
       {
         # Read-only. Most Describe actions do not support resource-level
-        # permissions, so the resource is "*". The AWS provider calls many of
-        # them (DescribeVpcs, DescribeSecurityGroupRules,
-        # DescribeLaunchTemplateVersions) and the harness calls
-        # DescribeInstances. Get* adds GetConsoleOutput for boot debugging.
+        # permissions, so the resource is "*". The harness calls
+        # DescribeInstances and DescribeLaunchTemplates. Get* adds
+        # GetConsoleOutput for boot debugging.
         Sid      = "Read"
         Effect   = "Allow"
         Action   = ["ec2:Describe*", "ec2:Get*"]
@@ -138,15 +140,14 @@ locals {
         }
       },
       {
-        # The security group and the key pair. They must be project
-        # resources, and they must come from the launch template.
-        Sid    = "RunInstancesProjectResources"
-        Effect = "Allow"
-        Action = "ec2:RunInstances"
-        Resource = [
-          "${local.ec2}:security-group/*",
-          "${local.ec2}:key-pair/*",
-        ]
+        # The security group. It must be a project resource, and it must come
+        # from the launch template. No statement allows a key-pair resource,
+        # so a request that names a key pair fails: SSH keys come only from
+        # EC2 Instance Connect.
+        Sid      = "RunInstancesSecurityGroup"
+        Effect   = "Allow"
+        Action   = "ec2:RunInstances"
+        Resource = "${local.ec2}:security-group/*"
         Condition = {
           StringEquals = { "aws:ResourceTag/Project" = var.project }
           Bool         = { "ec2:IsLaunchTemplateResource" = "true" }
@@ -180,57 +181,38 @@ locals {
       },
       {
         # Tags in a create request. EC2 authorizes ec2:CreateTags for each
-        # resource that a create action tags, with ec2:CreateAction set to
-        # the create action. Without this statement, RunInstances with
-        # TagSpecifications (or with tags from the launch template) fails,
-        # and so do the bench-base creates, because the provider sends
-        # default_tags in the create request. A Project tag, if present,
-        # must have the project value. Tag keys must be canonical.
+        # resource that RunInstances tags, with ec2:CreateAction set to
+        # RunInstances. Without this statement, RunInstances with
+        # TagSpecifications (or with tags from the launch template) fails.
+        # A Project tag, if present, must have the project value. Tag keys
+        # must be canonical.
         Sid      = "TagOnCreate"
         Effect   = "Allow"
         Action   = "ec2:CreateTags"
         Resource = "${local.ec2}:*/*"
         Condition = {
           StringEquals = {
-            "ec2:CreateAction" = [
-              "RunInstances",
-              "CreateSecurityGroup",
-              "ImportKeyPair",
-              "CreateLaunchTemplate",
-            ]
+            "ec2:CreateAction" = "RunInstances"
           }
           StringEqualsIfExists        = { "aws:RequestTag/Project" = var.project }
           "ForAllValues:StringEquals" = local.canonical_tag_keys
         }
       },
       {
-        # Tags on existing project resources: `bench extend` rewrites
-        # ExpiresAt, and tofu updates tags. The resource must already carry
-        # the project tag, so the user cannot pull a foreign resource into
-        # the boundary. The request cannot change the Project value, and it
-        # cannot add a tag key outside the canonical set.
-        Sid      = "TagProjectResources"
+        # Tags on existing project instances: `bench extend` rewrites
+        # ExpiresAt. The instance must already carry the project tag, so the
+        # role cannot pull a foreign resource into the boundary. The request
+        # cannot change the Project value, and it cannot add a tag key
+        # outside the canonical set. No statement allows DeleteTags, so
+        # Project and ExpiresAt stay on every resource.
+        Sid      = "TagProjectInstances"
         Effect   = "Allow"
         Action   = "ec2:CreateTags"
-        Resource = "${local.ec2}:*/*"
+        Resource = "${local.ec2}:instance/*"
         Condition = {
           StringEquals                = { "aws:ResourceTag/Project" = var.project }
           StringEqualsIfExists        = { "aws:RequestTag/Project" = var.project }
           "ForAllValues:StringEquals" = local.canonical_tag_keys
-        }
-      },
-      {
-        # Tag removal on project resources, for tofu tag updates. The request
-        # must name its tag keys: DeleteTags without keys deletes all tags,
-        # and then aws:TagKeys is absent. DenyUntagBoundary below blocks the
-        # Project and ExpiresAt keys.
-        Sid      = "UntagProjectResources"
-        Effect   = "Allow"
-        Action   = "ec2:DeleteTags"
-        Resource = "${local.ec2}:*/*"
-        Condition = {
-          StringEquals = { "aws:ResourceTag/Project" = var.project }
-          Null         = { "aws:TagKeys" = "false" }
         }
       },
       {
@@ -244,98 +226,74 @@ locals {
         Condition = { StringEquals = { "aws:ResourceTag/Project" = var.project } }
       },
       {
-        # The bench-base creates: the security group, the key pair, and the
-        # launch templates. Each create request must tag the new resource
-        # with the project, with canonical tag keys. The key comes from
-        # tls_private_key, so the provider uses ImportKeyPair, not
-        # CreateKeyPair.
-        Sid    = "CreateBaseResources"
-        Effect = "Allow"
-        Action = [
-          "ec2:CreateSecurityGroup",
-          "ec2:ImportKeyPair",
-          "ec2:CreateLaunchTemplate",
-        ]
-        Resource = [
-          "${local.ec2}:security-group/*",
-          "${local.ec2}:key-pair/*",
-          local.launch_templates,
-        ]
-        Condition = {
-          StringEquals                = { "aws:RequestTag/Project" = var.project }
-          "ForAllValues:StringEquals" = local.canonical_tag_keys
-        }
-      },
-      {
-        # CreateSecurityGroup also authorizes the VPC. The VPC has no project
-        # tag, so this statement names the default VPC by ARN.
-        Sid      = "CreateSecurityGroupInDefaultVpc"
-        Effect   = "Allow"
-        Action   = "ec2:CreateSecurityGroup"
-        Resource = "${local.ec2}:vpc/${data.aws_vpc.default.id}"
-      },
-      {
-        # The bench-base updates and deletes, on project resources only. The
-        # provider revokes the default egress rule of a new security group
-        # and then authorizes the rules of the configuration. A launch
-        # template change creates a version and makes it the default.
-        Sid    = "ManageBaseResources"
-        Effect = "Allow"
-        Action = [
-          "ec2:DeleteSecurityGroup",
-          "ec2:AuthorizeSecurityGroupIngress",
-          "ec2:AuthorizeSecurityGroupEgress",
-          "ec2:RevokeSecurityGroupIngress",
-          "ec2:RevokeSecurityGroupEgress",
-          "ec2:UpdateSecurityGroupRuleDescriptionsIngress",
-          "ec2:UpdateSecurityGroupRuleDescriptionsEgress",
-          "ec2:DeleteKeyPair",
-          "ec2:CreateLaunchTemplateVersion",
-          "ec2:ModifyLaunchTemplate",
-          "ec2:DeleteLaunchTemplate",
-        ]
-        Resource = [
-          "${local.ec2}:security-group/*",
-          "${local.ec2}:key-pair/*",
-          local.launch_templates,
-        ]
-        Condition = { StringEquals = { "aws:ResourceTag/Project" = var.project } }
-      },
-      {
-        # Authorize* can also authorize the new security-group-rule
-        # resource. A new rule has no tags yet, so it cannot match a tag
-        # condition. This statement grants nothing alone: the same request
-        # also authorizes the parent security group, which
-        # ManageBaseResources limits to project groups.
-        Sid    = "SecurityGroupRules"
-        Effect = "Allow"
-        Action = [
-          "ec2:AuthorizeSecurityGroupIngress",
-          "ec2:AuthorizeSecurityGroupEgress",
-        ]
-        Resource = "${local.ec2}:security-group-rule/*"
-      },
-      {
-        # Project and ExpiresAt stay on every resource, in any case spelling
-        # of the key: without Project a resource leaves the boundary and the
-        # reaper, and without ExpiresAt the TTL guard falls back to 12 hours.
-        # A Deny, so that no later Allow can remove them.
-        Sid       = "DenyUntagBoundary"
-        Effect    = "Deny"
-        Action    = "ec2:DeleteTags"
-        Resource  = "*"
-        Condition = { "ForAnyValue:StringEqualsIgnoreCase" = { "aws:TagKeys" = ["Project", "ExpiresAt"] } }
-      },
-      {
         # Deny every action outside the fleet region. This catches the
         # Describe and Get actions, which have no region in their resource.
         # sts:GetCallerIdentity is global, and AWS allows it even with an
-        # explicit deny. The exception makes that visible here.
+        # explicit deny. iam:PassRole is global too: it is checked inside a
+        # RunInstances request, and the session policy limits it to the box
+        # role. The exceptions keep a regional deny off global actions.
         Sid       = "DenyOtherRegions"
         Effect    = "Deny"
-        NotAction = ["sts:GetCallerIdentity"]
+        NotAction = ["sts:GetCallerIdentity", "iam:PassRole"]
         Resource  = "*"
         Condition = { StringNotEquals = { "aws:RequestedRegion" = var.region } }
+      },
+    ]
+  }
+
+  # The SSH path. A person or agent reaches a box in three steps:
+  # RunInstances passes the box role, SendSSHPublicKey puts a public key in
+  # the instance metadata for 60 seconds, and StartSession opens an SSM
+  # session that tunnels SSH to localhost:22. The box has no inbound rule.
+  session_policy = {
+    Version = "2012-10-17"
+    Statement = [
+      {
+        # The box role, and only to EC2. RunInstances checks this when the
+        # launch template names the instance profile.
+        Sid       = "PassBoxRole"
+        Effect    = "Allow"
+        Action    = "iam:PassRole"
+        Resource  = aws_iam_role.box.arn
+        Condition = { StringEquals = { "iam:PassedToService" = "ec2.amazonaws.com" } }
+      },
+      {
+        # A 60-second key for root on a project instance. ec2:osuser limits
+        # the user that the key is for.
+        Sid      = "SendSSHPublicKey"
+        Effect   = "Allow"
+        Action   = "ec2-instance-connect:SendSSHPublicKey"
+        Resource = "${local.ec2}:instance/*"
+        Condition = {
+          StringEquals = {
+            "aws:ResourceTag/Project" = var.project
+            "ec2:osuser"              = "root"
+          }
+        }
+      },
+      {
+        # An SSM session to a project instance. ssm:resourceTag is the tag
+        # key that Session Manager evaluates for an instance target.
+        # SessionDocumentAccessCheck makes Session Manager check the session
+        # document too, so a request without a document (a plain shell, the
+        # SSM-SessionManagerRunShell default) fails. The next statement
+        # allows the one document.
+        Sid      = "StartSessionOnProjectInstances"
+        Effect   = "Allow"
+        Action   = "ssm:StartSession"
+        Resource = "${local.ec2}:instance/*"
+        Condition = {
+          StringEquals = { "ssm:resourceTag/Project" = var.project }
+          BoolIfExists = { "ssm:SessionDocumentAccessCheck" = "true" }
+        }
+      },
+      {
+        # The AWS-owned document that forwards a session to the SSH port. An
+        # AWS-owned document ARN has no account.
+        Sid      = "StartSSHSessionDocument"
+        Effect   = "Allow"
+        Action   = "ssm:StartSession"
+        Resource = "arn:aws:ssm:${var.region}::document/AWS-StartSSHSession"
       },
     ]
   }

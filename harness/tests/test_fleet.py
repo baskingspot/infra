@@ -1,5 +1,4 @@
 from datetime import UTC, datetime, timedelta
-from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -134,9 +133,7 @@ def test_template_discovery(config: Config) -> None:
     template(client, "other-bench-x86_64", "other-bench")
     fleet = Fleet(config, client)
     assert fleet.templates() == expected
-    outputs = fleet.outputs()
-    assert outputs["launch_template_ids"] == expected
-    assert outputs["key_file"] == str(Path.home() / ".ssh" / "test-bench.pem")
+    assert fleet.outputs() == {"launch_template_ids": expected}
 
 
 @mock_aws
@@ -152,10 +149,10 @@ def test_missing_template(config: Config) -> None:
 
 
 @mock_aws
-def test_ensure_up_requires_the_key(config: Config) -> None:
+def test_ensure_up_requires_the_plugin(config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     client = boto3.client(
         "ec2", region_name="us-west-2", aws_access_key_id="testing", aws_secret_access_key="testing"
     )
-    config.project["ssh_key"] = "/nonexistent/bench.pem"
-    with pytest.raises(FileNotFoundError, match="SSH key"):
+    monkeypatch.setenv("PATH", "/nonexistent")
+    with pytest.raises(FileNotFoundError, match="session-manager-plugin"):
         ensure_up(Fleet(config, client), ["arm64"], "1h")

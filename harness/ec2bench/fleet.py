@@ -3,7 +3,6 @@
 import logging
 import os
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
 import boto3
@@ -40,10 +39,24 @@ def reap_candidates(instances: list[dict[str, Any]], now: datetime) -> list[str]
 class Fleet:
     def __init__(self, config: Config, client: Any = None) -> None:
         self.config = config
-        self.client = client or boto3.Session(
-            profile_name=os.environ.get("AWS_PROFILE", config.project["profile"]),
-            region_name=config.project["region"],
-        ).client("ec2")
+        self.client = client or self.session().client("ec2")
+        self._instance_connect: Any = None
+
+    @property
+    def profile(self) -> str:
+        """The AWS profile: AWS_PROFILE, then project.profile."""
+        return os.environ.get("AWS_PROFILE", self.config.project["profile"])
+
+    def session(self) -> boto3.Session:
+        return boto3.Session(profile_name=self.profile, region_name=self.config.project["region"])
+
+    def push_key(self, instance_id: str, user: str, public_key: str) -> None:
+        """Send a public key with EC2 Instance Connect. The box accepts it for 60 seconds."""
+        if self._instance_connect is None:
+            self._instance_connect = self.session().client("ec2-instance-connect")
+        self._instance_connect.send_ssh_public_key(
+            InstanceId=instance_id, InstanceOSUser=user, SSHPublicKey=public_key
+        )
 
     def instances(self) -> list[dict[str, Any]]:
         pages = self.client.get_paginator("describe_instances").paginate(
@@ -70,15 +83,12 @@ class Fleet:
         return found[0]
 
     def outputs(self) -> dict[str, Any]:
-        """The launch templates and key file that a launch and an SSH need.
+        """The launch templates that a launch needs.
 
         Resolved from AWS and the project configuration. OpenTofu state stays in
         the infrastructure checkout; the harness does not read it.
         """
-        return {
-            "launch_template_ids": self.templates(),
-            "key_file": str(self.config.ssh_key),
-        }
+        return {"launch_template_ids": self.templates()}
 
     def templates(self) -> dict[str, str]:
         """Launch template ID by architecture, matched by name and project tag."""
@@ -105,9 +115,6 @@ class Fleet:
                 f"No launch template {name!r} with Project={project!r}. "
                 "Apply baskingspot/infra's stacks/base, or correct project.name in bench.toml."
             ) from None
-
-    def key_path(self, outputs: dict[str, Any]) -> Path:
-        return Path(outputs["key_file"]).expanduser()
 
     def launch(self, target: str, ttl: str, size: str | None) -> dict[str, Any]:
         lifetime = self.config.ttl(ttl)

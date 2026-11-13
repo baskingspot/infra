@@ -1,4 +1,4 @@
-# Offline checks of the rendered bench user policy. The mock providers need
+# Offline checks of the rendered bench role policies and the box role. The mock providers need
 # no AWS credentials and write no files.
 # Run: tofu -chdir=infra/modules/bench-iam test
 
@@ -12,12 +12,6 @@ variables {
 mock_provider "archive" {}
 
 mock_provider "aws" {
-  mock_data "aws_vpc" {
-    defaults = {
-      id = "vpc-0123456789abcdef0"
-    }
-  }
-
   # Resources that other resources validate as ARNs.
   mock_resource "aws_iam_policy" {
     defaults = {
@@ -99,9 +93,33 @@ run "policy" {
     error_message = "The policy allows an action outside EC2."
   }
 
+  # A person applies bench-base. The role cannot write the launch templates,
+  # the security group, or a key pair, so it cannot change what boots on a
+  # box or open a port.
   assert {
-    condition     = length(regexall("vpc/vpc-0123456789abcdef0\"", aws_iam_policy.bench.policy)) == 1
-    error_message = "CreateSecurityGroup is not limited to the default VPC."
+    condition = alltrue(flatten([
+      for s in local.policy.Statement : [
+        for a in flatten([s.Action]) : !anytrue([
+          for prefix in [
+            "ec2:CreateLaunchTemplate", "ec2:ModifyLaunchTemplate", "ec2:DeleteLaunchTemplate",
+            "ec2:CreateSecurityGroup", "ec2:DeleteSecurityGroup", "ec2:AuthorizeSecurityGroup",
+            "ec2:RevokeSecurityGroup", "ec2:ModifySecurityGroup", "ec2:ImportKeyPair", "ec2:CreateKeyPair",
+            "ec2:DeleteKeyPair", "ec2:*",
+          ] : startswith(a, prefix)
+        ])
+      ] if s.Effect == "Allow"
+    ]))
+    error_message = "The EC2 policy can change a launch template, a security group, or a key pair."
+  }
+
+  # No RunInstances statement allows a key-pair resource.
+  assert {
+    condition = alltrue(flatten([
+      for s in local.policy.Statement : [
+        for r in flatten([s.Resource]) : !strcontains(r, ":key-pair/")
+      ] if s.Effect == "Allow"
+    ]))
+    error_message = "The EC2 policy allows a key pair."
   }
 
   # A stopped box does not run its TTL guard, and a start resets LaunchTime.
@@ -137,23 +155,19 @@ run "policy" {
       if can(s.Condition["ForAllValues:StringEquals"]["aws:TagKeys"])
       ]) == toset([
       "RunInstancesInstance", "RunInstancesVolume", "RunInstancesNetworkInterface",
-      "TagOnCreate", "TagProjectResources", "CreateBaseResources",
+      "TagOnCreate", "TagProjectInstances",
     ])
     error_message = "The set of statements with the canonical tag key condition changed."
   }
 
-  # Project and ExpiresAt cannot be deleted, in any case spelling. The Deny
-  # does not fire when aws:TagKeys is absent (DeleteTags without keys), so the
-  # Allow must require the key.
+  # Project and ExpiresAt stay: neither policy allows DeleteTags.
   assert {
-    condition = (
-      one([
-        for s in local.policy.Statement : s
-        if s.Effect == "Deny" && try(s.Action, "") == "ec2:DeleteTags" && s.Resource == "*"
-      ]).Condition == { "ForAnyValue:StringEqualsIgnoreCase" = { "aws:TagKeys" = ["Project", "ExpiresAt"] } }
-      && one([for s in local.policy.Statement : s.Condition.Null["aws:TagKeys"] if s.Sid == "UntagProjectResources"]) == "false"
-    )
-    error_message = "Project and ExpiresAt are not protected from DeleteTags."
+    condition = !anytrue(flatten([
+      for s in concat(local.policy.Statement, local.session_policy.Statement) : [
+        for a in flatten([s.Action]) : a == "ec2:DeleteTags"
+      ] if s.Effect == "Allow"
+    ]))
+    error_message = "A policy allows DeleteTags."
   }
 
   # EBS: gp3 baseline only, 100 GiB or smaller.
@@ -195,5 +209,94 @@ run "policy" {
       ])
     ])
     error_message = "RunInstances can create an instance, volume, or network interface without the project tag."
+  }
+}
+
+run "session_policy" {
+  command = plan
+
+  override_resource {
+    target = aws_iam_role.box
+    values = {
+      arn = "arn:aws:iam::123456789012:role/baskingspot-bench-box"
+    }
+  }
+
+  assert {
+    condition     = length(aws_iam_policy.session.policy) <= 6144
+    error_message = "The session policy has ${length(aws_iam_policy.session.policy)} characters. A managed policy can have 6,144."
+  }
+
+  # Three actions and no more.
+  assert {
+    condition = toset(flatten([
+      for s in local.session_policy.Statement : s.Action if s.Effect == "Allow"
+    ])) == toset(["iam:PassRole", "ec2-instance-connect:SendSSHPublicKey", "ssm:StartSession"])
+    error_message = "The session policy allows an action outside PassRole, SendSSHPublicKey, and StartSession."
+  }
+
+  # PassRole names the box role, for EC2 only.
+  assert {
+    condition = (
+      one([for s in local.session_policy.Statement : s if s.Sid == "PassBoxRole"]).Resource == "arn:aws:iam::123456789012:role/baskingspot-bench-box"
+      && one([for s in local.session_policy.Statement : s if s.Sid == "PassBoxRole"]).Condition == { StringEquals = { "iam:PassedToService" = "ec2.amazonaws.com" } }
+    )
+    error_message = "PassRole must name only the box role, and only for EC2."
+  }
+
+  # A pushed key is for root on a project instance.
+  assert {
+    condition = (
+      one([for s in local.session_policy.Statement : s if s.Sid == "SendSSHPublicKey"]).Resource == "arn:aws:ec2:us-west-2:123456789012:instance/*"
+      && one([for s in local.session_policy.Statement : s if s.Sid == "SendSSHPublicKey"]).Condition == { StringEquals = { "aws:ResourceTag/Project" = "baskingspot-bench", "ec2:osuser" = "root" } }
+    )
+    error_message = "SendSSHPublicKey must require the project tag and the root user."
+  }
+
+  # A session targets a project instance, and only with the SSH document.
+  assert {
+    condition = (
+      one([for s in local.session_policy.Statement : s if s.Sid == "StartSessionOnProjectInstances"]).Condition == {
+        StringEquals = { "ssm:resourceTag/Project" = "baskingspot-bench" }
+        BoolIfExists = { "ssm:SessionDocumentAccessCheck" = "true" }
+      }
+      && toset([
+        for s in local.session_policy.Statement : s.Resource
+        if s.Action == "ssm:StartSession" && strcontains(s.Resource, ":document/")
+      ]) == toset(["arn:aws:ssm:us-west-2::document/AWS-StartSSHSession"])
+    )
+    error_message = "StartSession must require the project tag, the document check, and only AWS-StartSSHSession."
+  }
+
+  # The DenyOtherRegions exceptions are global actions only.
+  assert {
+    condition     = one([for s in local.policy.Statement : s.NotAction if s.Sid == "DenyOtherRegions"]) == ["sts:GetCallerIdentity", "iam:PassRole"]
+    error_message = "DenyOtherRegions exempts an action other than GetCallerIdentity and PassRole."
+  }
+}
+
+run "box_role" {
+  command = plan
+
+  assert {
+    condition     = jsondecode(aws_iam_role.box.assume_role_policy).Statement[0].Principal == { Service = "ec2.amazonaws.com" }
+    error_message = "Only EC2 can assume the box role."
+  }
+
+  # Session Manager only: no EC2 action, so a box cannot terminate another.
+  assert {
+    condition = toset(jsondecode(aws_iam_role_policy.box.policy).Statement[0].Action) == toset([
+      "ssm:UpdateInstanceInformation",
+      "ssmmessages:CreateControlChannel",
+      "ssmmessages:CreateDataChannel",
+      "ssmmessages:OpenControlChannel",
+      "ssmmessages:OpenDataChannel",
+    ]) && length(jsondecode(aws_iam_role_policy.box.policy).Statement) == 1
+    error_message = "The box role must allow the Session Manager actions and nothing else."
+  }
+
+  assert {
+    condition     = aws_iam_instance_profile.box.name == "baskingspot-bench-box" && aws_iam_instance_profile.box.role == aws_iam_role.box.name
+    error_message = "The instance profile must be <project>-box, with the box role."
   }
 }

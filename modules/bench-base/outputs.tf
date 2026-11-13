@@ -7,14 +7,9 @@ output "launch_template_ids" {
   value       = { for arch, template in aws_launch_template.bench : arch => template.id }
 }
 
-output "key_file" {
-  description = "Absolute path of the SSH private key for root on the boxes"
-  value       = abspath(local_sensitive_file.ssh_key.filename)
-}
-
 output "security_group_id" {
-  description = "ID of the SSH security group"
-  value       = aws_security_group.ssh.id
+  description = "ID of the egress-only security group of the boxes"
+  value       = aws_security_group.box.id
 }
 
 output "user_data" {

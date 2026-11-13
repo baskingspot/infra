@@ -1,4 +1,4 @@
-# IAM user and reaper for the baskingspot-bench fleet (modules/bench-iam).
+# IAM roles and reaper for the baskingspot-bench fleet (modules/bench-iam).
 #
 # A human applies this stack with an IAM-capable profile (BENCH_BOOTSTRAP_PROFILE in .envrc.local).
 # The person then adds a role profile to ~/.aws/config; no key is written.

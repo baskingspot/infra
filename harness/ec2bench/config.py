@@ -62,11 +62,6 @@ class Config:
     def cache_dir(self) -> Path:
         return self.root / self.project.get("cache_dir", ".bench-cache")
 
-    @property
-    def ssh_key(self) -> Path:
-        value = self.project.get("ssh_key", f"~/.ssh/{self.project['name']}.pem")
-        return Path(value).expanduser()
-
     def ttl(self, value: str) -> timedelta:
         requested = duration(value)
         if requested > duration(self.fleet.get("max_ttl", "12h")):

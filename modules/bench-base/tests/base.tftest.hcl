@@ -1,5 +1,5 @@
 # Offline checks of the launch templates. The mock provider needs no AWS
-# credentials, and `command = plan` writes no key file.
+# credentials.
 # Run: tofu -chdir=infra/modules/bench-base test
 
 variables {
@@ -8,9 +8,9 @@ variables {
     x86_64 = "ami-0e78db03e0a4e1eb0"
     arm64  = "ami-0b1109b091092c6fe"
   }
-  image_version = "7"
-  nixos_module  = "{ pkgs, ... }: { environment.systemPackages = [ pkgs.jq ]; }"
-  key_file      = "/tmp/bench-base-test/bench.pem"
+  image_version         = "7"
+  nixos_module          = "{ pkgs, ... }: { environment.systemPackages = [ pkgs.jq ]; }"
+  instance_profile_name = "baskingspot-bench-box"
 }
 
 mock_provider "aws" {
@@ -74,17 +74,23 @@ run "launch_templates" {
     error_message = "Instances, volumes, and network interfaces must get Project and ManagedBy from the launch template."
   }
 
+  # Nothing can connect in. SSH arrives through SSM, from the box itself.
   assert {
-    condition     = aws_security_group.ssh.name == "baskingspot-bench-ssh"
-    error_message = "The security group must be <project>-ssh."
+    condition     = aws_security_group.box.name == "baskingspot-bench-box" && length(aws_security_group.box.ingress) == 0
+    error_message = "The security group must be <project>-box, with no inbound rule."
   }
 
+  # No key pair: the only SSH keys are the ones EC2 Instance Connect pushes.
   assert {
-    condition     = local_sensitive_file.ssh_key.file_permission == "0600" && output.key_file == "/tmp/bench-base-test/bench.pem"
-    error_message = "The key file must be var.key_file with mode 0600."
+    condition = alltrue([
+      for lt in aws_launch_template.bench :
+      lt.key_name == null
+      && lt.iam_instance_profile[0].name == "baskingspot-bench-box"
+    ])
+    error_message = "A launch template names a key pair or lost the box instance profile."
   }
 
-  # The harness interface: these three outputs, with these shapes.
+  # The operator interface: these outputs, with these shapes.
   assert {
     condition = (
       keys(output.launch_template_ids) == ["arm64", "x86_64"]
@@ -95,13 +101,8 @@ run "launch_templates" {
   }
 
   assert {
-    condition     = startswith(output.key_file, "/")
-    error_message = "key_file must be an absolute path."
-  }
-
-  assert {
-    condition     = output.security_group_id == aws_security_group.ssh.id
-    error_message = "security_group_id must be the ID of the SSH security group."
+    condition     = output.security_group_id == aws_security_group.box.id
+    error_message = "security_group_id must be the ID of the box security group."
   }
 
   # The rendered box configuration carries the fleet contract and the
@@ -112,10 +113,24 @@ run "launch_templates" {
       && strcontains(output.user_data, "pkgs.jq")
       && strcontains(output.user_data, "programs.nix-ld.enable = true;")
       && strcontains(output.user_data, "systemd.timers.bench-ttl-guard")
+      && strcontains(output.user_data, "max_lifetime_seconds=$((24 * 3600))")
       && strcontains(output.user_data, "-w '%%{http_code}'")
+      && strcontains(output.user_data, "services.openssh.authorizedKeysCommand = \"/etc/ssh/eic_run_authorized_keys %u %f\";")
+      && strcontains(output.user_data, "exec $${ec2InstanceConnect}/bin/eic_run_authorized_keys")
+      && !strcontains(output.user_data, "amazon-ssm-agent.enable")
       && !startswith(output.user_data, "#!")
       && length(regexall("(?m)^###", output.user_data)) == 0
     )
     error_message = "The rendered user_data lost part of the fleet contract."
   }
+}
+
+run "rejects_fractional_lifetime" {
+  command = plan
+
+  variables {
+    max_lifetime_hours = 1.5
+  }
+
+  expect_failures = [var.max_lifetime_hours]
 }

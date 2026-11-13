@@ -39,12 +39,3 @@ def test_invalid_arch(config: Config) -> None:
     path.write_text(path.read_text().replace('arch = "arm64"', 'arch = "unknown"'))
     with pytest.raises(ValueError, match="Invalid instance_type or arch"):
         Config.load(config.root)
-
-
-def test_ssh_key(config: Config) -> None:
-    assert config.ssh_key == Path.home() / ".ssh" / "test-bench.pem"
-    path = config.root / "bench.toml"
-    path.write_text(
-        path.read_text().replace('extra_key = "ignored"', 'ssh_key = "~/keys/bench.pem"')
-    )
-    assert Config.load(config.root).ssh_key == Path.home() / "keys" / "bench.pem"

@@ -15,6 +15,16 @@ output "policy_arn" {
   value       = module.bench.policy_arn
 }
 
+output "session_policy_arn" {
+  description = "ARN of the bench SSH session policy"
+  value       = module.bench.session_policy_arn
+}
+
+output "instance_profile_name" {
+  description = "Instance profile of the boxes. stacks/base names it."
+  value       = module.bench.instance_profile_name
+}
+
 output "reaper_function_name" {
   description = "Name of the reaper Lambda function"
   value       = module.bench.reaper_function_name

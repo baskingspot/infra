@@ -11,21 +11,34 @@
 # flake. amazon-init reads a line that starts with three hash signs as a
 # channel URL, and a file that starts with #! as a shell script. Avoid both.
 #
-# The module owns the fleet contract: the TTL guard, nix-ld for shipped
-# binaries, benchmark sysctls, and /etc/bench-image. The project adds its
-# own settings through var.nixos_module, imported below.
+# The module owns the fleet contract: the TTL guard, SSH through SSM and EC2
+# Instance Connect, nix-ld for shipped binaries, benchmark sysctls, and
+# /etc/bench-image. The project adds its own settings through
+# var.nixos_module, imported below.
 { pkgs, lib, ... }:
 let
-  # TTL guard: power off after the ExpiresAt instance tag. The launch template
-  # sets shutdown behavior to terminate, so poweroff destroys the instance.
+  # TTL guard: power off after the ExpiresAt instance tag, or after the
+  # maximum lifetime, whichever comes first. The launch template sets
+  # shutdown behavior to terminate, so poweroff destroys the instance. The
+  # maximum lifetime does not read the tag, so a tag far in the future does
+  # not keep a box alive. It counts from boot: a reboot restarts it, and the
+  # reaper, which counts from LaunchTime, covers that case.
   ttlGuard = ''
     set -u
     imds=http://169.254.169.254/latest
     state=/run/bench-ttl-guard
     fallback_seconds=$((12 * 3600))
+    max_lifetime_seconds=$((${max_lifetime_hours} * 3600))
 
     now=$(date -u +%s)
+    uptime=$(cut -d. -f1 /proc/uptime)
     expires=""
+
+    if [ "$uptime" -ge "$max_lifetime_seconds" ]; then
+      echo "Uptime $uptime s reached the maximum lifetime of ${max_lifetime_hours} hours; powering off"
+      poweroff
+      exit 0
+    fi
 
     # IMDSv2: get a session token, then read the tag. curl prints 000 as the
     # HTTP code when it cannot connect.
@@ -66,7 +79,6 @@ let
     esac
 
     if [ -z "$expires" ]; then
-      uptime=$(cut -d. -f1 /proc/uptime)
       expires=$((now - uptime + fallback_seconds))
     fi
 
@@ -75,6 +87,55 @@ let
       poweroff
     fi
   '';
+
+  # EC2 Instance Connect: the AuthorizedKeysCommand that AWS ships for Amazon
+  # Linux and Ubuntu. nixpkgs has no package for it. A person or agent pushes
+  # a public key with ec2-instance-connect:SendSSHPublicKey, IMDS serves it
+  # for 60 seconds, and these scripts check the AWS signature and the OCSP
+  # staples before they give the key to sshd. The box holds no long-lived key.
+  #
+  # The scripts call /bin and /usr/bin by absolute path. The install step
+  # removes those prefixes and the wrapper supplies PATH. The CA path becomes
+  # the bundle file: NixOS /etc/ssl/certs has no hashed links, and the parser
+  # supports a bundle file.
+  ec2InstanceConnect = pkgs.stdenvNoCC.mkDerivation {
+    pname = "ec2-instance-connect";
+    version = "1.1-18";
+    src = pkgs.fetchFromGitHub {
+      owner = "aws";
+      repo = "aws-ec2-instance-connect-config";
+      rev = "551c73e8ec1f5ade4c8b1f52cf616e75b47879b4";
+      hash = "sha256-zwHSIFGCgjtyvww4gIdF3jg+ECtULnR+27VgeH7KILY=";
+    };
+    nativeBuildInputs = [ pkgs.makeWrapper ];
+    dontBuild = true;
+    installPhase = ''
+      install -Dm755 -t $out/bin src/bin/eic_run_authorized_keys \
+        src/bin/eic_curl_authorized_keys src/bin/eic_parse_authorized_keys
+      sed -i -E \
+        -e '2,$ s#(^|[[:space:]"(=|`])/(usr/)?bin/#\1#g' \
+        -e 's#^ca_path=/etc/ssl/certs$#ca_path=/etc/ssl/certs/ca-certificates.crt#' \
+        $out/bin/*
+      for script in $out/bin/*; do
+        wrapProgram "$script" --prefix PATH : $${
+          lib.makeBinPath (
+            with pkgs;
+            [
+              coreutils
+              curl
+              findutils
+              gawk
+              gnugrep
+              gnused
+              openssh
+              openssl
+              util-linux
+            ]
+          )
+        }
+      done
+    '';
+  };
 in
 {
   imports = [
@@ -105,14 +166,15 @@ ${nixos_module}
 
   # Mask services not needed during benchmarking to reduce timer interrupts
   # and background CPU noise. mkForce: the amazon-image module sets some of
-  # these (serial-getty@ttyS0, amazon-ssm-agent) at default priority, which
-  # conflicts with a plain `false` — the eval fails and the first-boot
-  # rebuild never lands.
+  # these (serial-getty@ttyS0) at default priority, which conflicts with a
+  # plain `false` — the eval fails and the first-boot rebuild never lands.
+  # The amazon-ssm-agent service stays: SSH reaches the box only through an
+  # SSM session. It runs in system.slice, which isolate() keeps off the
+  # benchmark core.
   # NOTE: do NOT disable dhcpcd — it owns the interface on the EC2 image;
   # stopping it at the first-boot switch deconfigures the leased address and
   # the instance becomes unreachable seconds after boot. Its idle cost is
   # one renewal per hour; not worth losing the box.
-  systemd.services.amazon-ssm-agent.enable = lib.mkForce false;
   systemd.services.systemd-timesyncd.enable = lib.mkForce false;
   systemd.services.systemd-oomd.enable = lib.mkForce false;
   systemd.services."serial-getty@ttyS0".enable = lib.mkForce false;
@@ -122,6 +184,26 @@ ${nixos_module}
     rsync
     util-linux
   ];
+
+  # SSH listens on the box, but the security group allows no inbound
+  # traffic. The SSM agent connects the AWS-StartSSHSession tunnel to
+  # localhost:22. The only keys are the ones that EC2 Instance Connect
+  # pushed in the last 60 seconds. sshd refuses an AuthorizedKeysCommand
+  # under /nix/store, which is group-writable, so a copy in /etc execs it.
+  environment.etc."ssh/eic_run_authorized_keys" = {
+    mode = "0755";
+    text = ''
+      #!/bin/sh
+      exec $${ec2InstanceConnect}/bin/eic_run_authorized_keys "$@"
+    '';
+  };
+  services.openssh.authorizedKeysCommand = "/etc/ssh/eic_run_authorized_keys %u %f";
+  services.openssh.authorizedKeysCommandUser = "ec2-instance-connect";
+  users.users.ec2-instance-connect = {
+    isSystemUser = true;
+    group = "ec2-instance-connect";
+  };
+  users.groups.ec2-instance-connect = { };
 
   environment.etc."bench-image".text = "${image_version}\n";
 
