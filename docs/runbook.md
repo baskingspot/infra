@@ -135,16 +135,22 @@ SSO profile.
    printf 'VPCs: %s; applied VPC quota: %s\n' "$vpcs" "$quota"
    ```
 
-   If the count equals or exceeds the quota, delete an unused VPC or request a quota increase. A create at that count fails with `VpcLimitExceeded`. Complete that remedy before the next command.
+   The documented default is five VPCs per region. The live check on 2026-11-19 returned five VPCs and an applied quota of `5.0`. At these values, the first apply requires a remedy before it can succeed.
 
-   If the count is below the quota, apply the shared network stack. Every benchmark fleet uses this VPC.
+   If the count equals or exceeds the quota, ask Matt to request an increase for "VPCs per Region" in `us-west-2`, or to select an unused baskingspot-owned VPC for removal. Complete that remedy before the network apply.
+
+   Do not delete the PlanetScale `dev-aws-uswest2-*` or `edge-gateway-dev-aws-us-west-2` VPCs. They are not benchmark resources, and none has the `Project=baskingspot-bench` tag.
+
+3. Apply the shared network stack. Every benchmark fleet uses this VPC.
 
    ```sh
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/bench-network init
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/bench-network apply
    ```
 
-3. Apply the IAM stack. It creates the bench role, the box role, the
+   If `CreateVpc` fails with `VpcLimitExceeded`, it fails before AWS creates any network resource. No partial network remains. Complete the remedy from step 2 and rerun the apply.
+
+4. Apply the IAM stack. It creates the bench role, the box role, the
    policies, and the reaper.
 
    ```sh
@@ -152,7 +158,7 @@ SSO profile.
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/iam apply
    ```
 
-4. Add the role profile to `~/.aws/config`. The role is assumed from the
+5. Add the role profile to `~/.aws/config`. The role is assumed from the
    SSO session, so no key is stored:
 
    ```sh
@@ -163,14 +169,14 @@ SSO profile.
    aws configure set region us-west-2 --profile baskingspot-bench
    ```
 
-5. Log in to the source profile. The SSO session lasts as long as the
+6. Log in to the source profile. The SSO session lasts as long as the
    organization allows, and the role credentials refresh themselves:
 
    ```sh
    aws sso login --profile $BENCH_BOOTSTRAP_PROFILE
    ```
 
-6. Make sure that the profile works:
+7. Make sure that the profile works:
 
    ```sh
    AWS_PROFILE=baskingspot-bench aws sts get-caller-identity
@@ -179,32 +185,32 @@ SSO profile.
    The `Arn` field must be
    `arn:aws:sts::$TF_VAR_account_id:assumed-role/baskingspot-bench/...`.
 
-7. Do the procedure "Apply the base stack".
+8. Do the procedure "Apply the base stack".
 
-8. Do the procedure "Make sure that the reaper runs".
+9. Do the procedure "Make sure that the reaper runs".
 
-9. Optional: check the policies with IAM Access Analyzer. Findings of type
-   `ERROR` or `SECURITY_WARNING` need a fix.
+10. Optional: check the policies with IAM Access Analyzer. Findings of type
+    `ERROR` or `SECURITY_WARNING` need a fix.
 
-   ```sh
-   for output in policy_arn session_policy_arn; do
-     arn=$(tofu -chdir=stacks/iam output -raw $output)
-     version=$(AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-policy --policy-arn "$arn" \
-       --query Policy.DefaultVersionId --output text)
-     AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-policy-version --policy-arn "$arn" \
-       --version-id "$version" --query PolicyVersion.Document >/tmp/bench-policy.json
-     AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
-       --policy-type IDENTITY_POLICY --policy-document file:///tmp/bench-policy.json
-   done
-   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-role-policy --role-name baskingspot-bench-reaper \
-     --policy-name baskingspot-bench-reaper --query PolicyDocument >/tmp/reaper-policy.json
-   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
-     --policy-type IDENTITY_POLICY --policy-document file:///tmp/reaper-policy.json
-   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-role-policy --role-name baskingspot-bench-box \
-     --policy-name session-manager --query PolicyDocument >/tmp/box-policy.json
-   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
-     --policy-type IDENTITY_POLICY --policy-document file:///tmp/box-policy.json
-   ```
+    ```sh
+    for output in policy_arn session_policy_arn; do
+      arn=$(tofu -chdir=stacks/iam output -raw $output)
+      version=$(AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-policy --policy-arn "$arn" \
+        --query Policy.DefaultVersionId --output text)
+      AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-policy-version --policy-arn "$arn" \
+        --version-id "$version" --query PolicyVersion.Document >/tmp/bench-policy.json
+      AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
+        --policy-type IDENTITY_POLICY --policy-document file:///tmp/bench-policy.json
+    done
+    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-role-policy --role-name baskingspot-bench-reaper \
+      --policy-name baskingspot-bench-reaper --query PolicyDocument >/tmp/reaper-policy.json
+    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
+      --policy-type IDENTITY_POLICY --policy-document file:///tmp/reaper-policy.json
+    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-role-policy --role-name baskingspot-bench-box \
+      --policy-name session-manager --query PolicyDocument >/tmp/box-policy.json
+    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
+      --policy-type IDENTITY_POLICY --policy-document file:///tmp/box-policy.json
+    ```
 
 ## Change the IAM stack
 
