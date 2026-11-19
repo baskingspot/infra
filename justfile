@@ -13,7 +13,7 @@ test:
     tofu -chdir=modules/bench-iam init -backend=false -input=false
     tofu -chdir=modules/bench-iam test
     uv run pytest
-    for stack in iam base; do tofu -chdir=stacks/$stack init -backend=false -input=false > /dev/null && TF_VAR_account_id=123456789012 tofu -chdir=stacks/$stack validate; done
+    for stack in bench-network iam base; do tofu -chdir=stacks/$stack init -backend=false -input=false > /dev/null && TF_VAR_account_id=123456789012 tofu -chdir=stacks/$stack validate; done
 
 [doc("Check OpenTofu (tofu fmt, tflint), Python (ruff, ty), shell (shfmt, shellcheck), Nix, Markdown, the workflows, and this justfile")]
 [group("lint")]
