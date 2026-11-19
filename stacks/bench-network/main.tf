@@ -29,8 +29,9 @@ variable "account_id" {
 }
 
 locals {
-  project = "baskingspot-bench"
-  region  = "us-west-2"
+  project           = "baskingspot-bench"
+  region            = "us-west-2"
+  availability_zone = "us-west-2a"
 
   # This range starts above every supplied us-west-2 range through
   # 10.5.64.0/18. One /24 is active. Three more /24 blocks remain available.
@@ -52,6 +53,11 @@ provider "aws" {
 
 data "aws_availability_zones" "available" {
   state = "available"
+
+  filter {
+    name   = "opt-in-status"
+    values = ["opt-in-not-required"]
+  }
 }
 
 # One AZ is deliberate. The harness exposes one launch template per
@@ -69,9 +75,18 @@ resource "aws_vpc" "bench" {
 
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.bench.id
-  availability_zone       = sort(data.aws_availability_zones.available.names)[0]
+  availability_zone       = local.availability_zone
   cidr_block              = local.subnet_cidr
   map_public_ip_on_launch = true
+
+  # A literal keeps list order and Local Zones from replacing this shared
+  # subnet. An unavailable pinned zone fails this precondition instead.
+  lifecycle {
+    precondition {
+      condition     = contains(data.aws_availability_zones.available.names, local.availability_zone)
+      error_message = "The pinned availability zone must be available and require no opt-in."
+    }
+  }
 
   tags = {
     Name = "${local.project}-public"

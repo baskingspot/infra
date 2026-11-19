@@ -124,7 +124,20 @@ SSO profile.
    aws sso login --profile $BENCH_BOOTSTRAP_PROFILE
    ```
 
-2. Apply the shared network stack. Every benchmark fleet uses this VPC.
+2. Compare the VPC count with its applied regional quota:
+
+   ```sh
+   vpcs=$(AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws ec2 describe-vpcs --region us-west-2 \
+     --query 'length(Vpcs)' --output text)
+   quota=$(AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws service-quotas get-service-quota \
+     --region us-west-2 --service-code vpc --quota-code L-F678F1CE \
+     --query 'Quota.Value' --output text)
+   printf 'VPCs: %s; applied VPC quota: %s\n' "$vpcs" "$quota"
+   ```
+
+   If the count equals or exceeds the quota, delete an unused VPC or request a quota increase. A create at that count fails with `VpcLimitExceeded`. Complete that remedy before the next command.
+
+   If the count is below the quota, apply the shared network stack. Every benchmark fleet uses this VPC.
 
    ```sh
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/bench-network init

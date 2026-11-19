@@ -8,7 +8,7 @@ Every benchmark fleet shares one VPC named `baskingspot-bench`. `stacks/bench-ne
 
 The VPC uses `10.6.0.0/22`. This range starts above the account's supplied ranges through `10.5.64.0/18`. One public subnet uses `10.6.0.0/24`. Three `/24` blocks remain available.
 
-The shared stack creates one subnet in the first available AZ. The harness fixes one subnet in each launch template, so another AZ adds no failover. Pass exactly one subnet ID in `subnet_ids`. Fleets own security groups and launch templates. They do not own the network.
+The shared stack creates one subnet in the pinned `us-west-2a` AZ. The zone must be available and require no opt-in. The harness fixes one subnet in each launch template, so another AZ adds no failover. Pass exactly one subnet ID in `subnet_ids`. Fleets own security groups and launch templates. They do not own the network.
 
 Boxes get public addresses for outbound traffic. The internet gateway and default route reach the internet directly. No NAT gateway is necessary. The security group accepts no inbound traffic. SSH uses SSM and EC2 Instance Connect.
 
@@ -31,6 +31,11 @@ data "aws_subnets" "bench" {
     name   = "vpc-id"
     values = [data.aws_vpc.bench.id]
   }
+
+  filter {
+    name   = "tag:Name"
+    values = ["baskingspot-bench-public"]
+  }
 }
 
 module "bench" {
@@ -51,6 +56,6 @@ module "bench" {
 }
 ```
 
-Apply `stacks/bench-network/` before this consumer. The `aws_vpc` data source returns an error if the named VPC is absent. Multiple matching VPCs also return an error.
+Apply `stacks/bench-network/` before this consumer. The `aws_vpc` data source returns an error if the named VPC is absent. Multiple matching VPCs also return an error. The subnet lookup requires both the VPC ID and the public subnet's stable `Name` tag.
 
 The caller owns the AWS provider. Its `default_tags` must set `Project` to the fleet name. The IAM policy and reaper use that tag as the fleet boundary.

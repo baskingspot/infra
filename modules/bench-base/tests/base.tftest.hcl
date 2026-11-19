@@ -170,6 +170,46 @@ run "rejects_multiple_subnet_ids" {
   expect_failures = [var.subnet_ids]
 }
 
+run "rejects_empty_vpc_id" {
+  command = plan
+
+  variables {
+    vpc_id = ""
+  }
+
+  expect_failures = [var.vpc_id]
+}
+
+run "rejects_invalid_vpc_id" {
+  command = plan
+
+  variables {
+    vpc_id = "not-a-vpc"
+  }
+
+  expect_failures = [var.vpc_id]
+}
+
+run "rejects_empty_subnet_id" {
+  command = plan
+
+  variables {
+    subnet_ids = [""]
+  }
+
+  expect_failures = [var.subnet_ids]
+}
+
+run "rejects_invalid_subnet_id" {
+  command = plan
+
+  variables {
+    subnet_ids = ["not-a-subnet"]
+  }
+
+  expect_failures = [var.subnet_ids]
+}
+
 run "rejects_fractional_lifetime" {
   command = plan
 

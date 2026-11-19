@@ -6,6 +6,11 @@ variable "project" {
 variable "vpc_id" {
   description = "ID of the shared VPC. The module creates the fleet security group in this VPC and performs no VPC lookup."
   type        = string
+
+  validation {
+    condition     = can(regex("^vpc-", var.vpc_id))
+    error_message = "vpc_id must start with vpc-."
+  }
 }
 
 variable "subnet_ids" {
@@ -13,8 +18,11 @@ variable "subnet_ids" {
   type        = list(string)
 
   validation {
-    condition     = length(var.subnet_ids) == 1
-    error_message = "subnet_ids must contain exactly one subnet ID for the launch templates."
+    condition = (
+      length(var.subnet_ids) == 1
+      && alltrue([for id in var.subnet_ids : can(regex("^subnet-", id))])
+    )
+    error_message = "subnet_ids must contain exactly one subnet ID starting with subnet-."
   }
 }
 

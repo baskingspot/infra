@@ -71,6 +71,11 @@ data "aws_subnets" "bench" {
     name   = "vpc-id"
     values = [data.aws_vpc.bench.id]
   }
+
+  filter {
+    name   = "tag:Name"
+    values = ["baskingspot-bench-public"]
+  }
 }
 
 module "bench" {

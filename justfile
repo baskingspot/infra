@@ -5,7 +5,7 @@
 default:
     @just --list
 
-[doc("Run the tests: the bench-base and bench-iam OpenTofu tests, the reaper and harness pytest suites, and `tofu validate` on each stack with a fake account ID")]
+[doc("Run the bench-base, bench-iam, and bench-network OpenTofu tests, the pytest suites, and `tofu validate` on each stack with a fake account ID")]
 [group("test")]
 test:
     tofu -chdir=modules/bench-base init -backend=false -input=false
@@ -14,6 +14,7 @@ test:
     tofu -chdir=modules/bench-iam test
     uv run pytest
     for stack in bench-network iam base; do tofu -chdir=stacks/$stack init -backend=false -input=false > /dev/null && TF_VAR_account_id=123456789012 tofu -chdir=stacks/$stack validate; done
+    tofu -chdir=stacks/bench-network test
 
 [doc("Check OpenTofu (tofu fmt, tflint), Python (ruff, ty), shell (shfmt, shellcheck), Nix, Markdown, the workflows, and this justfile")]
 [group("lint")]
