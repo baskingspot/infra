@@ -3,6 +3,29 @@ variable "project" {
   type        = string
 }
 
+variable "vpc_id" {
+  description = "ID of the shared VPC. The module creates the fleet security group in this VPC and performs no VPC lookup."
+  type        = string
+
+  validation {
+    condition     = can(regex("^vpc-", var.vpc_id))
+    error_message = "vpc_id must start with vpc-."
+  }
+}
+
+variable "subnet_ids" {
+  description = "IDs of the shared public subnets. Supply exactly one because the harness fixes one subnet in each launch template."
+  type        = list(string)
+
+  validation {
+    condition = (
+      length(var.subnet_ids) == 1
+      && alltrue([for id in var.subnet_ids : can(regex("^subnet-", id))])
+    )
+    error_message = "subnet_ids must contain exactly one subnet ID starting with subnet-."
+  }
+}
+
 variable "amis" {
   description = "AMI ID by EC2 architecture name (x86_64, arm64). Each key gets a launch template <project>-<key>, and it is the arch value of a target in bench.toml. The AMIs must be NixOS: the user_data is a NixOS configuration."
   type        = map(string)

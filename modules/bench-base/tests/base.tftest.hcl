@@ -3,7 +3,9 @@
 # Run: tofu -chdir=infra/modules/bench-base test
 
 variables {
-  project = "baskingspot-bench"
+  project    = "baskingspot-bench"
+  vpc_id     = "vpc-0123456789abcdef0"
+  subnet_ids = ["subnet-0123456789abcdef0"]
   amis = {
     x86_64 = "ami-0e78db03e0a4e1eb0"
     arm64  = "ami-0b1109b091092c6fe"
@@ -13,13 +15,7 @@ variables {
   instance_profile_name = "baskingspot-bench-box"
 }
 
-mock_provider "aws" {
-  mock_data "aws_vpc" {
-    defaults = {
-      id = "vpc-0123456789abcdef0"
-    }
-  }
-}
+mock_provider "aws" {}
 
 # The mock cannot vary by instance, so both AMIs get the same values. The
 # owner and architecture filters of data.aws_ami.pinned run only in AWS.
@@ -27,6 +23,35 @@ override_data {
   target = data.aws_ami.pinned
   values = {
     root_device_name = "/dev/xvda"
+  }
+}
+
+# No data.aws_vpc.default can supply this ID. The plan must use the explicit
+# network inputs for both the fleet security group and every launch template.
+run "plan_has_no_default_vpc_lookup" {
+  command = plan
+
+  assert {
+    condition     = aws_security_group.box.vpc_id == "vpc-0123456789abcdef0"
+    error_message = "The box security group must use var.vpc_id, not a default VPC lookup."
+  }
+
+  assert {
+    condition = alltrue([
+      for lt in aws_launch_template.bench :
+      lt.network_interfaces[0].subnet_id == "subnet-0123456789abcdef0"
+    ])
+    error_message = "Every launch template must use the subnet from var.subnet_ids."
+  }
+
+  assert {
+    condition = alltrue([
+      for lt in aws_launch_template.bench :
+      lt.network_interfaces[0].security_groups == toset([aws_security_group.box.id])
+      && lt.network_interfaces[0].associate_public_ip_address == "true"
+      && lt.network_interfaces[0].delete_on_termination == "true"
+    ])
+    error_message = "The primary interface must use the fleet security group, a public address, and termination cleanup."
   }
 }
 
@@ -123,6 +148,66 @@ run "launch_templates" {
     )
     error_message = "The rendered user_data lost part of the fleet contract."
   }
+}
+
+run "rejects_empty_subnet_ids" {
+  command = plan
+
+  variables {
+    subnet_ids = []
+  }
+
+  expect_failures = [var.subnet_ids]
+}
+
+run "rejects_multiple_subnet_ids" {
+  command = plan
+
+  variables {
+    subnet_ids = ["subnet-0123456789abcdef0", "subnet-0fedcba9876543210"]
+  }
+
+  expect_failures = [var.subnet_ids]
+}
+
+run "rejects_empty_vpc_id" {
+  command = plan
+
+  variables {
+    vpc_id = ""
+  }
+
+  expect_failures = [var.vpc_id]
+}
+
+run "rejects_invalid_vpc_id" {
+  command = plan
+
+  variables {
+    vpc_id = "not-a-vpc"
+  }
+
+  expect_failures = [var.vpc_id]
+}
+
+run "rejects_empty_subnet_id" {
+  command = plan
+
+  variables {
+    subnet_ids = [""]
+  }
+
+  expect_failures = [var.subnet_ids]
+}
+
+run "rejects_invalid_subnet_id" {
+  command = plan
+
+  variables {
+    subnet_ids = ["not-a-subnet"]
+  }
+
+  expect_failures = [var.subnet_ids]
 }
 
 run "rejects_fractional_lifetime" {

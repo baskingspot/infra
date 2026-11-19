@@ -9,6 +9,7 @@ and `region` values, `image_version`, and the stack outputs.
 
 | Path                    | Content                                                                                                         | Who applies it                        |
 | ----------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| `stacks/bench-network/` | Root stack: the shared VPC, one public subnet, an internet gateway, and routing                                 | A human, once for the org             |
 | `stacks/iam/`           | Root stack: the bench role, the box role, their policies, and the reaper                                        | A human                               |
 | `stacks/base/`          | Root stack: the egress-only security group and the launch templates                                             | A human                               |
 | `stacks/base/image.nix` | An example project NixOS module that the box configuration imports                                              | `stacks/base/` puts it in `user_data` |
@@ -18,11 +19,9 @@ and `region` values, `image_version`, and the stack outputs.
 
 ## Configuration
 
-Each root stack sets `project`, `region`, and `account_id` in `locals`. The
-values are `baskingspot-bench`, `us-west-2`, and the account ID in `TF_VAR_account_id`. `project` and
-`region` must be equal to `project.name` and `project.region` in
-the harness configuration. The AWS provider refuses
-every other account.
+Each root stack reads `account_id` from `TF_VAR_account_id` and uses `us-west-2`. The fleet roots default `project` to `baskingspot-bench`. These values must equal `project.name` and `project.region` in the harness configuration. The AWS provider refuses every other account.
+
+One VPC named `baskingspot-bench` serves every fleet. `stacks/bench-network/` creates it once. Consumers find its `Name` tag and supply its network to `bench-base`. A fleet owns its security group and launch templates, not the network.
 
 The instance allowlist is `instance_families` in `stacks/iam/main.tf`. It does not
 come from the harness configuration. The agent can edit that file, and a cost control
@@ -125,22 +124,27 @@ SSO profile.
    aws sso login --profile $BENCH_BOOTSTRAP_PROFILE
    ```
 
-2. Make sure that no old security group has the name `baskingspot-bench-box`
-   in the default VPC:
+2. Compare the VPC count with its applied regional quota:
 
    ```sh
-   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws ec2 describe-security-groups --region us-west-2 \
-     --filters Name=group-name,Values=baskingspot-bench-box --query 'SecurityGroups[].[GroupId,VpcId]'
+   vpcs=$(AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws ec2 describe-vpcs --region us-west-2 \
+     --query 'length(Vpcs)' --output text)
+   quota=$(AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws service-quotas get-service-quota \
+     --region us-west-2 --service-code vpc --quota-code L-F678F1CE \
+     --query 'Quota.Value' --output text)
+   printf 'VPCs: %s; applied VPC quota: %s\n' "$vpcs" "$quota"
    ```
 
-3. If the command shows a group in the default VPC, and no instance uses
-   it, delete it:
+   If the count equals or exceeds the quota, delete an unused VPC or request a quota increase. A create at that count fails with `VpcLimitExceeded`. Complete that remedy before the next command.
+
+   If the count is below the quota, apply the shared network stack. Every benchmark fleet uses this VPC.
 
    ```sh
-   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws ec2 delete-security-group --region us-west-2 --group-id <id>
+   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/bench-network init
+   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/bench-network apply
    ```
 
-4. Apply the IAM stack. It creates the bench role, the box role, the
+3. Apply the IAM stack. It creates the bench role, the box role, the
    policies, and the reaper.
 
    ```sh
@@ -148,7 +152,7 @@ SSO profile.
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/iam apply
    ```
 
-5. Add the role profile to `~/.aws/config`. The role is assumed from the
+4. Add the role profile to `~/.aws/config`. The role is assumed from the
    SSO session, so no key is stored:
 
    ```sh
@@ -159,14 +163,14 @@ SSO profile.
    aws configure set region us-west-2 --profile baskingspot-bench
    ```
 
-6. Log in to the source profile. The SSO session lasts as long as the
+5. Log in to the source profile. The SSO session lasts as long as the
    organization allows, and the role credentials refresh themselves:
 
    ```sh
    aws sso login --profile $BENCH_BOOTSTRAP_PROFILE
    ```
 
-7. Make sure that the profile works:
+6. Make sure that the profile works:
 
    ```sh
    AWS_PROFILE=baskingspot-bench aws sts get-caller-identity
@@ -175,32 +179,32 @@ SSO profile.
    The `Arn` field must be
    `arn:aws:sts::$TF_VAR_account_id:assumed-role/baskingspot-bench/...`.
 
-8. Do the procedure "Apply the base stack".
+7. Do the procedure "Apply the base stack".
 
-9. Do the procedure "Make sure that the reaper runs".
+8. Do the procedure "Make sure that the reaper runs".
 
-10. Optional: check the policies with IAM Access Analyzer. Findings of type
-    `ERROR` or `SECURITY_WARNING` need a fix.
+9. Optional: check the policies with IAM Access Analyzer. Findings of type
+   `ERROR` or `SECURITY_WARNING` need a fix.
 
-    ```sh
-    for output in policy_arn session_policy_arn; do
-      arn=$(tofu -chdir=stacks/iam output -raw $output)
-      version=$(AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-policy --policy-arn "$arn" \
-        --query Policy.DefaultVersionId --output text)
-      AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-policy-version --policy-arn "$arn" \
-        --version-id "$version" --query PolicyVersion.Document >/tmp/bench-policy.json
-      AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
-        --policy-type IDENTITY_POLICY --policy-document file:///tmp/bench-policy.json
-    done
-    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-role-policy --role-name baskingspot-bench-reaper \
-      --policy-name baskingspot-bench-reaper --query PolicyDocument >/tmp/reaper-policy.json
-    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
-      --policy-type IDENTITY_POLICY --policy-document file:///tmp/reaper-policy.json
-    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-role-policy --role-name baskingspot-bench-box \
-      --policy-name session-manager --query PolicyDocument >/tmp/box-policy.json
-    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
-      --policy-type IDENTITY_POLICY --policy-document file:///tmp/box-policy.json
-    ```
+   ```sh
+   for output in policy_arn session_policy_arn; do
+     arn=$(tofu -chdir=stacks/iam output -raw $output)
+     version=$(AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-policy --policy-arn "$arn" \
+       --query Policy.DefaultVersionId --output text)
+     AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-policy-version --policy-arn "$arn" \
+       --version-id "$version" --query PolicyVersion.Document >/tmp/bench-policy.json
+     AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
+       --policy-type IDENTITY_POLICY --policy-document file:///tmp/bench-policy.json
+   done
+   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-role-policy --role-name baskingspot-bench-reaper \
+     --policy-name baskingspot-bench-reaper --query PolicyDocument >/tmp/reaper-policy.json
+   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
+     --policy-type IDENTITY_POLICY --policy-document file:///tmp/reaper-policy.json
+   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws iam get-role-policy --role-name baskingspot-bench-box \
+     --policy-name session-manager --query PolicyDocument >/tmp/box-policy.json
+   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE aws accessanalyzer validate-policy --region us-west-2 \
+     --policy-type IDENTITY_POLICY --policy-document file:///tmp/box-policy.json
+   ```
 
 ## Change the IAM stack
 
@@ -328,8 +332,7 @@ the IAM stack.
 
 ## Apply the base stack
 
-A human applies this stack with the bootstrap profile. The bench role can
-launch from the launch templates, but it cannot change them.
+A human applies this stack with the bootstrap profile. Apply `stacks/bench-network/` first. The base stack finds the VPC by its `Name` tag and reads no network state. The bench role can launch from the launch templates, but it cannot change them.
 
 1. Apply the stack:
 
@@ -445,13 +448,19 @@ aws sso login --profile $BENCH_BOOTSTRAP_PROFILE
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/base destroy
    ```
 
-3. Destroy the IAM stack. This step also removes the reaper, so do it last.
+3. Destroy the IAM stack. This step also removes the reaper.
 
    ```sh
    AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/iam destroy
    ```
 
 4. Remove the `[profile baskingspot-bench]` block from `~/.aws/config`.
+
+5. If no benchmark fleet remains in the region, destroy the shared network:
+
+   ```sh
+   AWS_PROFILE=$BENCH_BOOTSTRAP_PROFILE tofu -chdir=stacks/bench-network destroy
+   ```
 
 ## Test the modules offline
 
@@ -583,9 +592,6 @@ The log group keeps logs for 30 days (`reaper_log_retention_days`).
 - If a box stopped before its `ExpiresAt`, search the reaper log for its
   instance ID. The action line gives the reason.
 
-- If the base apply fails with `InvalidGroup.Duplicate`, do steps 2 and 3 of
-  "Bootstrap the account".
-
 - If SSH to a box fails, make sure that the SSM agent registered. The
   `PingStatus` must be `Online`. The agent needs a few minutes after boot.
 
@@ -596,14 +602,16 @@ The log group keeps logs for 30 days (`reaper_log_retention_days`).
 
 ## Use it for a project
 
-1. Pick the fleet. The default is one org fleet named `baskingspot-bench`. A project that needs its own fleet sets another `project` value in both stacks.
+1. Pick the fleet. The default is one org fleet named `baskingspot-bench`. A project that needs its own fleet sets another `project` value in `stacks/iam` and `stacks/base`. Keep the shared network unchanged.
 2. Set `TF_VAR_account_id` and `BENCH_BOOTSTRAP_PROFILE` in `.envrc.local`.
 3. If the project uses other instance families, edit `instance_families` in `stacks/iam/main.tf`.
 4. Replace `stacks/base/image.nix` with the NixOS module of the project.
-5. Do the procedures "Bootstrap the account" and "Apply the base stack".
+5. Do the procedures "Bootstrap the account" and "Apply the base stack". The network apply occurs once for the whole org. Fleets do not create VPCs.
 6. Add the harness to the project's `uv` project and pin a tag of this
    repository. `harness/README.md` has the install form and the adapter
    contract. Add `ssm-session-manager-plugin` to the devshell of the project.
 7. Write `bench.toml` with the same `project` and `region`, and the
    `image_version` of the base stack. The harness needs no path to this
    repository.
+
+For tls, add the shared VPC lookup and module inputs from [the `bench-base` example](../modules/bench-base/README.md#connect-a-fleet) to `infra/bench/main.tf`. This lookup needs no access to another root's state.
