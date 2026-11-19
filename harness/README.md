@@ -128,27 +128,40 @@ box.run("uname -a")
 ```
 
 `box_for` (in `ec2bench.cli`) builds the `Box` with the SSM proxy and the key
-push. `Box.upload_contents()` accepts rsync exclusion patterns through `exclude`.
-A leading `/` anchors a pattern to the source root, so it cannot match a nested fixture directory.
-With `delete=True`, it removes destination entries that are absent from the source.
+push. Every upload passes `--chown=root:root` to rsync. New files belong to root,
+and a later upload repairs old ownership too. Git commands on the box therefore
+see a consistent owner without a separate `chown` command.
+
+`Box.upload_contents()` accepts rsync exclusion patterns through `exclude`.
+A leading `/` anchors a pattern to the source root. With `delete=True`, rsync
+removes destination entries that are absent from the source. An exclude can drop
+a tracked file and make the remote checkout dirty. Exclude the results directory
+to preserve it, or write results outside the destination.
+
+For a source checkout, call `Box.upload_checkout()` instead:
 
 ```python
-box.upload_contents(
+box.upload_checkout(
     config.root,
     "/root/tls",
-    exclude=[
-        "/.git",
-        "/.envrc.local",
-        "/.terraform",
-        "/zig-out",
-        "/.zig-cache",
-        "/.direnv",
-    ],
-    delete=True,
+    results_dir=config.results_dir,
+    timeout=900,
 )
 ```
 
-Write results outside `/root/tls`, or exclude their directory too so `delete=True` preserves them.
+The helper transfers tracked files, non-ignored untracked files, and `.git`.
+The remote tree therefore keeps the source contents and Git provenance. Generated-file
+filters cover Zig build outputs and common tool caches at any depth. These filters
+apply only to untracked paths, so a tracked `*.pem` or golden file under `zig-out`
+survives. The helper also omits `.envrc.local`.
+
+Rsync deletes stale remote paths but protects `results_dir`, relative to the
+checkout root. If Git is absent or the source is not a work tree, the helper calls
+`upload_contents` with fixed filters and `delete=True`. That fallback can exclude
+a tracked file whose path matches a generated-file filter.
+
+`Box.upload()`, `Box.upload_contents()`, `Box.upload_checkout()`, and
+`Box.download()` accept a `timeout` keyword in seconds. The default is 300.
 
 `box.poweroff()` ends a box from inside: the launch template sets the
 shutdown behavior to terminate, so the box terminates with no AWS call. It

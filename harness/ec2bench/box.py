@@ -10,13 +10,30 @@ the box goes away.
 
 import contextlib
 import hashlib
+import os
 import shlex
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterable
 from pathlib import Path
+
+_RSYNC_TIMEOUT = 300
+_CHECKOUT_CACHE_DIRS = frozenset(
+    {
+        b".bench-cache",
+        b".direnv",
+        b".terraform",
+        b".venv",
+        b".zig-cache",
+        b"__pycache__",
+        b"node_modules",
+        b"zig-out",
+    }
+)
+_CHECKOUT_LOCAL_FILES = frozenset({b".envrc.local"})
 
 
 class RemoteError(subprocess.SubprocessError):
@@ -195,9 +212,9 @@ class Box:
             time.sleep(5)
         raise TimeoutError(f"{self.instance_id}: SSH/image deadline: {last_error}")
 
-    def upload(self, source: Path, destination: str) -> None:
+    def upload(self, source: Path, destination: str, *, timeout: float = _RSYNC_TIMEOUT) -> None:
         """Copy `source` into `destination` as `<destination>/<source.name>`."""
-        self._upload(str(source), destination)
+        self._upload(str(source), destination, timeout=timeout)
 
     def upload_contents(
         self,
@@ -206,6 +223,7 @@ class Box:
         *,
         exclude: Iterable[str] = (),
         delete: bool = False,
+        timeout: float = _RSYNC_TIMEOUT,
     ) -> None:
         """Copy the contents of the directory `source` into `destination`.
 
@@ -214,21 +232,145 @@ class Box:
         patterns. A leading `/` anchors a pattern to the source root. `delete`
         removes destination files absent from source. Write results outside
         `destination`, or exclude their directory to preserve them.
+
+        `--chown=root:root` sets root ownership on new and existing remote files.
+        Unlike `--no-owner --no-group`, it also repairs ownership from an older
+        upload. The default SSH user is root, so no later `chown` pass is needed.
+        `timeout` bounds the rsync command in seconds.
         """
         options = [f"--exclude={pattern}" for pattern in exclude]
         if delete:
             options.append("--delete")
-        self._upload(str(source) + "/", destination, options)
+        self._upload(str(source) + "/", destination, options, timeout=timeout)
 
-    def _upload(self, source: str, destination: str, options: list[str] | None = None) -> None:
+    def upload_checkout(
+        self,
+        source: Path,
+        destination: str,
+        *,
+        results_dir: str = "bench-results",
+        timeout: float = _RSYNC_TIMEOUT,
+    ) -> None:
+        """Mirror a Git checkout and preserve the remote results directory.
+
+        The transfer uses `git ls-files` for each tracked path present in the
+        work tree and each non-ignored untracked file. It also transfers `.git`.
+        Generated-file filters apply only to untracked paths, so a cache rule
+        cannot drop a tracked fixture. Rsync deletes stale destination files but
+        protects `results_dir`, relative to the checkout root. Untracked local
+        files under that directory do not transfer.
+
+        If Git is unavailable or `source` is not a work tree, this method falls
+        back to `upload_contents` with generated-file filters and `delete=True`.
+        That fallback can omit a tracked file whose path matches a cache filter.
+        `timeout` bounds the rsync command in seconds.
+        """
+        results = os.fsencode(results_dir).strip(b"/")
+        if not results or results == b"." or b".." in results.split(b"/"):
+            raise ValueError("results_dir must name a directory inside the checkout")
+        try:
+            tracked = subprocess.run(
+                ["git", "-C", str(source), "ls-files", "-z", "--cached"],
+                check=True,
+                capture_output=True,
+            ).stdout
+            untracked = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(source),
+                    "ls-files",
+                    "-z",
+                    "--others",
+                    "--exclude-standard",
+                ],
+                check=True,
+                capture_output=True,
+            ).stdout
+        except FileNotFoundError, subprocess.CalledProcessError:
+            excludes = [
+                *(f"{os.fsdecode(name)}/" for name in sorted(_CHECKOUT_CACHE_DIRS)),
+                *(os.fsdecode(name) for name in sorted(_CHECKOUT_LOCAL_FILES)),
+                f"/{os.fsdecode(results)}/",
+            ]
+            self.upload_contents(
+                source, destination, exclude=excludes, delete=True, timeout=timeout
+            )
+            return
+
+        def generated(path: bytes) -> bool:
+            parts = path.split(b"/")
+            return (
+                any(part in _CHECKOUT_CACHE_DIRS for part in parts[:-1])
+                or parts[-1] in _CHECKOUT_LOCAL_FILES
+                or path == results
+                or path.startswith(results + b"/")
+            )
+
+        # Keep tracked paths that are absent from the work tree. Rsync turns
+        # those entries into explicit deletion requests.
+        selected = {path for path in tracked.split(b"\0") if path}
+        selected.update(path for path in untracked.split(b"\0") if path and not generated(path))
+        selected.add(b".git")
+        for base, directories, filenames in os.walk(source / ".git"):
+            relative = Path(base).relative_to(source)
+            for name in directories + filenames:
+                selected.add(os.fsencode((relative / name).as_posix()))
+
+        # A file list implies parent directories, but implied directories do not
+        # authorize deletions. List each parent and the root explicitly. Keep
+        # recursion off so those directories do not reintroduce generated files.
+        for path in tuple(selected):
+            while parent := path.rpartition(b"/")[0]:
+                selected.add(parent)
+                path = parent
+        selected.add(b".")
+
+        with tempfile.NamedTemporaryFile(prefix="ec2bench-checkout-") as listing:
+            listing.write(b"\0".join(sorted(selected)) + b"\0")
+            listing.flush()
+            options = [
+                "--dirs",
+                "--delete",
+                "--delete-missing-args",
+                "--from0",
+                f"--files-from={listing.name}",
+                f"--filter=protect /{os.fsdecode(results)}/***",
+            ]
+            self._upload(str(source) + "/", destination, options, timeout=timeout)
+
+    def _upload(
+        self,
+        source: str,
+        destination: str,
+        options: list[str] | None = None,
+        *,
+        timeout: float = _RSYNC_TIMEOUT,
+    ) -> None:
         self.run(f"mkdir -p {shlex.quote(destination)}")
-        self._rsync(source, f"{self.destination}:{destination}/", options)
+        self._rsync(
+            source,
+            f"{self.destination}:{destination}/",
+            ["--chown=root:root", *(options or [])],
+            timeout=timeout,
+        )
 
-    def download(self, source: str, destination: Path) -> None:
+    def download(self, source: str, destination: Path, *, timeout: float = _RSYNC_TIMEOUT) -> None:
+        """Copy remote directory contents into `destination`.
+
+        `timeout` bounds the rsync command in seconds.
+        """
         destination.mkdir(parents=True, exist_ok=True)
-        self._rsync(f"{self.destination}:{source}/", str(destination) + "/")
+        self._rsync(f"{self.destination}:{source}/", str(destination) + "/", timeout=timeout)
 
-    def _rsync(self, source: str, destination: str, options: list[str] | None = None) -> None:
+    def _rsync(
+        self,
+        source: str,
+        destination: str,
+        options: list[str] | None = None,
+        *,
+        timeout: float = _RSYNC_TIMEOUT,
+    ) -> None:
         self.connect()
         checked(
             [
@@ -241,7 +383,7 @@ class Box:
                 source,
                 destination,
             ],
-            timeout=300,
+            timeout=timeout,
         )
 
     def shell(self, command: tuple[str, ...]) -> int:
