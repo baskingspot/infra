@@ -1,11 +1,14 @@
 # bench-base: the durable resources of a tag-scoped EC2 benchmark fleet.
 #
 # It creates an egress-only security group and one launch template for each
-# architecture. A harness (ec2bench) finds the launch templates by name and
-# project tag, and launches and terminates instances from them. A person
-# applies this module. The bench role of the bench-iam module can launch from
-# these templates but cannot change them, so the TTL guard in the user_data
-# stays on every box.
+# architecture in the caller's network. A harness (ec2bench) finds the launch
+# templates by name and project tag, and launches and terminates instances from
+# them. A person applies this module. The bench role of the bench-iam module can
+# launch from these templates but cannot change them, so the TTL guard in the
+# user_data stays on every box.
+#
+# The caller supplies vpc_id and subnet_ids. The module performs no network
+# lookup. Each launch template uses the one supplied subnet.
 #
 # No port is open to the internet and no key pair exists. SSH reaches a box
 # through an SSM session, with a key that EC2 Instance Connect pushes for 60
@@ -34,10 +37,6 @@ locals {
   })
 }
 
-data "aws_vpc" "default" {
-  default = true
-}
-
 # Look up each pinned AMI. The owner and architecture filters make a wrong
 # or swapped ID fail at plan time, before it reaches a launch template.
 data "aws_ami" "pinned" {
@@ -61,7 +60,7 @@ data "aws_ami" "pinned" {
 resource "aws_security_group" "box" {
   name        = "${var.project}-box"
   description = "Egress only for ${var.project} boxes"
-  vpc_id      = data.aws_vpc.default.id
+  vpc_id      = var.vpc_id
 
   egress {
     description = "All outbound traffic"
@@ -92,8 +91,18 @@ resource "aws_launch_template" "bench" {
   name        = "${var.project}-${each.key}"
   description = "${var.project} box (${each.key})"
 
-  image_id               = data.aws_ami.pinned[each.key].id
-  vpc_security_group_ids = [aws_security_group.box.id]
+  image_id = data.aws_ami.pinned[each.key].id
+
+  # A primary interface fixes placement in the shared public subnet. The box
+  # connects out through a public address. The security group accepts no
+  # inbound traffic.
+  network_interfaces {
+    device_index                = 0
+    subnet_id                   = one(var.subnet_ids)
+    security_groups             = [aws_security_group.box.id]
+    associate_public_ip_address = "true"
+    delete_on_termination       = "true"
+  }
 
   # The box role grants the SSM agent its registration and nothing else.
   iam_instance_profile {

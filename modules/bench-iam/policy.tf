@@ -155,10 +155,9 @@ locals {
         }
       },
       {
-        # The subnet. The launch template sets no subnet, so EC2 selects a
-        # default subnet, and ec2:IsLaunchTemplateResource would be false.
-        # The security group statement above already keeps the instance in
-        # the default VPC, because a security group works only in its own VPC.
+        # The launch template supplies a subnet from the shared benchmark VPC.
+        # The security group must belong to the same VPC. This statement allows
+        # the subnet resource when the launch template belongs to the project.
         Sid       = "RunInstancesSubnet"
         Effect    = "Allow"
         Action    = "ec2:RunInstances"

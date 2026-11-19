@@ -11,14 +11,17 @@ The default fleet is `baskingspot-bench`, in `us-west-2`. Nothing in this repo i
 
 ## Layout
 
-| Path                  | Content                                                                                                                                                                                                            |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `modules/bench-iam/`  | The bench role and its policies, the box role, and the reaper: a Lambda that terminates any project instance past its `ExpiresAt` tag or its maximum lifetime, and deletes orphaned volumes and network interfaces |
-| `modules/bench-base/` | An egress-only security group, one launch template per architecture, and the NixOS box configuration with a TTL guard and EC2 Instance Connect                                                                     |
-| `stacks/iam/`         | The root stack that applies `bench-iam`. A human applies it                                                                                                                                                        |
-| `stacks/base/`        | The root stack that applies `bench-base`. A human applies it                                                                                                                                                       |
-| `harness/`            | The Python package `ec2bench`: the fleet commands, the safety rules, and the adapter contract. A consumer pins a tested full commit                                                                                |
-| `docs/runbook.md`     | The runbook: the lifetime guarantee, the account bootstrap, and every procedure                                                                                                                                    |
+| Path                    | Content                                                                                                                                                                                                            |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `modules/bench-iam/`    | The bench role and its policies, the box role, and the reaper: a Lambda that terminates any project instance past its `ExpiresAt` tag or its maximum lifetime, and deletes orphaned volumes and network interfaces |
+| `modules/bench-base/`   | An egress-only security group, one launch template per architecture, and the NixOS box configuration with a TTL guard and EC2 Instance Connect                                                                     |
+| `stacks/bench-network/` | The shared VPC, one public subnet, an internet gateway, and routing. A human applies it once for the org                                                                                                           |
+| `stacks/iam/`           | The root stack that applies `bench-iam`. A human applies it                                                                                                                                                        |
+| `stacks/base/`          | The root stack that applies `bench-base`. A human applies it                                                                                                                                                       |
+| `harness/`              | The Python package `ec2bench`: the fleet commands, the safety rules, and the adapter contract. A consumer pins a tested full commit                                                                                |
+| `docs/runbook.md`       | The runbook: the lifetime guarantee, the account bootstrap, and every procedure                                                                                                                                    |
+
+Every fleet shares the VPC named `baskingspot-bench`. Consumers find it by tag and pass its network to `bench-base`. Each fleet owns only its security group and launch templates. `docs/runbook.md` gives the apply order.
 
 A harness (`ec2bench`, a Python package) launches and ends instances from the launch templates. It finds a template by name (`<project>-<arch>`) and `Project` tag, so a consumer needs no checkout of this repository. No box listens on the internet and nobody holds a long-lived key: SSH goes through an SSM session, with a key that EC2 Instance Connect pushes for 60 seconds, and the AWS credentials come from an SSO session. It lives in `harness/` and installs from a full git commit. A project keeps only its adapter and adds this package as a dependency. `harness/README.md` has the configuration and the adapter contract.
 

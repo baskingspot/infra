@@ -4,6 +4,9 @@
 # The bench role cannot: it can launch from the launch templates but not
 # change them. The harness finds the launch templates by name and project tag
 # and reads no state from here. docs/runbook.md is the operator documentation.
+#
+# stacks/bench-network creates the shared VPC once. This stack finds it by tag
+# because the roots have local state and cannot use a cross-stack state output.
 
 terraform {
   required_version = ">= 1.12"
@@ -56,10 +59,26 @@ provider "aws" {
   }
 }
 
+data "aws_vpc" "bench" {
+  filter {
+    name   = "tag:Name"
+    values = ["baskingspot-bench"]
+  }
+}
+
+data "aws_subnets" "bench" {
+  filter {
+    name   = "vpc-id"
+    values = [data.aws_vpc.bench.id]
+  }
+}
+
 module "bench" {
   source = "../../modules/bench-base"
 
-  project = local.project
+  project    = local.project
+  vpc_id     = data.aws_vpc.bench.id
+  subnet_ids = data.aws_subnets.bench.ids
 
   # Official NixOS 25.11.12484.b6018f87da91 AMIs in us-west-2. A new AMI
   # takes effect for new instances only.

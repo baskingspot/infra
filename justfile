@@ -25,7 +25,7 @@ lint:
     uv run ty check harness modules/bench-iam/reaper
     uv lock --check
     nix fmt -- --ci
-    oxfmt --check README.md AGENTS.md docs harness .github
+    oxfmt --check README.md AGENTS.md modules/bench-base/README.md docs harness .github
     actionlint
     zizmor .
     just --fmt --check
@@ -36,7 +36,7 @@ fmt:
     tofu fmt -recursive
     uv run ruff format harness modules/bench-iam/reaper
     nix fmt
-    oxfmt README.md AGENTS.md docs harness .github
+    oxfmt README.md AGENTS.md modules/bench-base/README.md docs harness .github
     just --fmt
 
 [doc("Everything CI runs")]
