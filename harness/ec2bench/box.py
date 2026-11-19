@@ -210,8 +210,10 @@ class Box:
         """Copy the contents of the directory `source` into `destination`.
 
         The destination names the directory directly: no post-upload rename
-        depends on the local directory's basename. `exclude` passes rsync
-        filter patterns. `delete` removes destination files absent from source.
+        depends on the local directory's basename. `exclude` passes rsync filter
+        patterns. A leading `/` anchors a pattern to the source root. `delete`
+        removes destination files absent from source. Write results outside
+        `destination`, or exclude their directory to preserve them.
         """
         options = [f"--exclude={pattern}" for pattern in exclude]
         if delete:

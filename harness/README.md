@@ -129,16 +129,26 @@ box.run("uname -a")
 
 `box_for` (in `ec2bench.cli`) builds the `Box` with the SSM proxy and the key
 push. `Box.upload_contents()` accepts rsync exclusion patterns through `exclude`.
+A leading `/` anchors a pattern to the source root, so it cannot match a nested fixture directory.
 With `delete=True`, it removes destination entries that are absent from the source.
 
 ```python
 box.upload_contents(
     config.root,
     "/root/tls",
-    exclude=[".envrc.local", ".terraform", "zig-out", ".zig-cache", ".direnv"],
+    exclude=[
+        "/.git",
+        "/.envrc.local",
+        "/.terraform",
+        "/zig-out",
+        "/.zig-cache",
+        "/.direnv",
+    ],
     delete=True,
 )
 ```
+
+Write results outside `/root/tls`, or exclude their directory too so `delete=True` preserves them.
 
 `box.poweroff()` ends a box from inside: the launch template sets the
 shutdown behavior to terminate, so the box terminates with no AWS call. It

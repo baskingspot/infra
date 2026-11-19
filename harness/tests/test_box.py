@@ -168,7 +168,14 @@ def test_upload_contents_filters_and_deletes(
     monkeypatch.setattr(box, "connect", lambda: None)
     monkeypatch.setattr("ec2bench.box.checked", capture)
 
-    excluded = [".git", ".zig-cache", "zig-out", ".direnv", ".envrc.local"]
+    excluded = [
+        "/.git",
+        "/.envrc.local",
+        "/.terraform",
+        "/zig-out",
+        "/.zig-cache",
+        "/.direnv",
+    ]
     box.upload_contents(source, "/root/tls", exclude=excluded, delete=True)
 
     rsync = commands[-1]
