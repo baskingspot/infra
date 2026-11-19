@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 import boto3
 import pytest
+from click.testing import CliRunner
+from ec2bench import cli as cli_module
 from ec2bench.cli import ensure_up
 from ec2bench.config import Config
 from ec2bench.fleet import Fleet, expiry, reap_candidates, tags
@@ -156,3 +158,53 @@ def test_ensure_up_requires_the_plugin(config: Config, monkeypatch: pytest.Monke
     monkeypatch.setenv("PATH", "/nonexistent")
     with pytest.raises(FileNotFoundError, match="session-manager-plugin"):
         ensure_up(Fleet(config, client), ["arm64"], "1h")
+
+
+def test_wait_terminated_uses_the_ec2_waiter(config: Config) -> None:
+    waits: list[dict[str, Any]] = []
+
+    class Waiter:
+        def wait(self, **kwargs: Any) -> None:
+            waits.append(kwargs)
+
+    class Client:
+        def get_waiter(self, name: str) -> Waiter:
+            assert name == "instance_terminated"
+            return Waiter()
+
+    fleet = Fleet(config, Client())
+    fleet.wait_terminated([])
+    assert waits == []
+
+    fleet.wait_terminated(["i-one", "i-two"])
+    assert waits == [
+        {
+            "InstanceIds": ["i-one", "i-two"],
+            "WaiterConfig": {"Delay": 5, "MaxAttempts": 120},
+        }
+    ]
+
+
+def test_down_waits_for_termination(config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[tuple[str, list[str]]] = []
+
+    class FakeFleet:
+        def selected(self, names: list[str]) -> list[dict[str, Any]]:
+            assert names == ["intel"]
+            return [{"InstanceId": "i-0123456789abcdef0"}]
+
+        def terminate(self, ids: list[str]) -> None:
+            events.append(("terminate", ids))
+
+        def wait_terminated(self, ids: list[str]) -> None:
+            events.append(("wait", ids))
+
+    monkeypatch.setattr(cli_module, "Fleet", lambda _config: FakeFleet())
+    monkeypatch.chdir(config.root)
+    result = CliRunner().invoke(cli_module.cli, ["down", "intel"])
+
+    assert result.exit_code == 0, result.output
+    assert events == [
+        ("terminate", ["i-0123456789abcdef0"]),
+        ("wait", ["i-0123456789abcdef0"]),
+    ]

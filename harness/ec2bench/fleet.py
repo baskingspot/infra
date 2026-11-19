@@ -194,6 +194,13 @@ class Fleet:
         if ids:
             self.client.terminate_instances(InstanceIds=ids)
 
+    def wait_terminated(self, ids: list[str]) -> None:
+        """Wait until EC2 reports every listed instance as terminated."""
+        if ids:
+            self.client.get_waiter("instance_terminated").wait(
+                InstanceIds=ids, WaiterConfig={"Delay": 5, "MaxAttempts": 120}
+            )
+
     def extend(self, names: list[str], ttl: str) -> None:
         lifetime = self.config.ttl(ttl)
         ids = [instance["InstanceId"] for instance in self.selected(names)]
