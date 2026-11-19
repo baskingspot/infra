@@ -5,7 +5,7 @@
 
 The package started as `fastmem`'s `bench/ec2bench/` and holds no
 benchmark-specific code. A project keeps its adapter next to its workload and
-adds this package as a git dependency on a tag of this repository.
+adds this package as a git dependency on a tested full commit of this repository.
 
 ## The API adapters use
 
@@ -14,7 +14,7 @@ consumer:
 
 - `Config.load`, `root`, `results_dir`, `cache_dir`, `ttl`, `select`.
 - `Fleet(config)`: `instances`, `selected`, `launch`, `terminate`, `extend`,
-  `reap`, `outputs`, `templates`, `one`, `wait_running`, `converge`,
+  `reap`, `outputs`, `templates`, `one`, `wait_running`, `wait_terminated`, `converge`,
   `push_key`, `profile`; the module functions `tags`, `expiry`,
   `reap_candidates`. `outputs()` is resolved from AWS and the configuration;
   it reads no OpenTofu state, even though the name suggests it does.
@@ -25,8 +25,8 @@ consumer:
   `box_for(fleet, instance)` takes an optional third argument, `outputs`, that
   it ignores, so adapters written for v0.1 still call it.
 
-v0.2.0 removed `Config.ssh_key`, `Fleet.key_path`, and `outputs()["key_file"]`,
-and changed the `Box` constructor: SSH goes through SSM with an EC2 Instance
+The development API removed `Config.ssh_key`, `Fleet.key_path`, and
+`outputs()["key_file"]`, and changed the `Box` constructor: SSH goes through SSM with an EC2 Instance
 Connect key, and no key file or public IP exists.
 
 - `parallel`, `Outcome`, `progress`, `check_cancelled`, `runs.watch`,
@@ -42,7 +42,13 @@ Connect key, and no key file or public IP exists.
 
 `Box.upload` copies a file or directory and keeps its basename.
 `Box.upload_contents` copies the contents of a directory into the destination
-and drops the basename. Both exist because the two adapters use the two shapes.
+and drops the basename. Its optional `exclude` iterable passes rsync filter
+patterns, and `delete=True` mirrors deletions. Its defaults preserve the old,
+unfiltered behavior. Both upload methods exist because the adapters use both shapes.
+
+`bench down` calls `Fleet.wait_terminated` after `Fleet.terminate`. An adapter
+that powers off or terminates a box must wait for its instance ID before a
+relaunch of the same target.
 
 `isolate` returns `Generator[int]`, not `Iterator[int]`: ty rejects the
 `Iterator` overload of `contextmanager`. Keep it that way.
@@ -62,6 +68,7 @@ and drops the basename. Both exist because the two adapters use the two shapes.
 - `ExpiresAt` is written as `%Y-%m-%dT%H:%M:%SZ`. The reaper and the TTL guard
   both parse that form; a different form ends the instance early.
 - `up` reaps before it launches. Keep that order.
+- `down` waits until EC2 reports every selected instance as terminated.
 - A failure to reach SSH or the image marker terminates the instance. Do not
   leave a box behind for a retry to find.
 - The tests use `moto`. Do not add a test that calls AWS.

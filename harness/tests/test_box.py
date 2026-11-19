@@ -144,3 +144,75 @@ def test_missing_plugin_names_the_package(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setenv("PATH", "/nonexistent")
     with pytest.raises(FileNotFoundError, match="ssm-session-manager-plugin"):
         ssm.plugin()
+
+
+def test_upload_contents_filters_and_deletes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+
+    def capture(args: list[str], *, timeout: float) -> str:
+        assert timeout > 0
+        commands.append(args)
+        return ""
+
+    source = tmp_path / "checkout"
+    source.mkdir()
+    box = Box(
+        "i-0123456789abcdef0",
+        tmp_path / "ssh",
+        region="us-west-2",
+        profile="bench",
+        push=lambda _user, _key: None,
+    )
+    monkeypatch.setattr(box, "connect", lambda: None)
+    monkeypatch.setattr("ec2bench.box.checked", capture)
+
+    excluded = [
+        "/.git",
+        "/.envrc.local",
+        "/.terraform",
+        "/zig-out",
+        "/.zig-cache",
+        "/.direnv",
+    ]
+    box.upload_contents(source, "/root/tls", exclude=excluded, delete=True)
+
+    rsync = commands[-1]
+    assert rsync[0] == "rsync"
+    assert "--delete" in rsync
+    assert [arg for arg in rsync if arg.startswith("--exclude=")] == [
+        f"--exclude={pattern}" for pattern in excluded
+    ]
+    assert rsync[-2:] == [f"{source}/", f"{box.destination}:/root/tls/"]
+
+
+def test_upload_contents_stays_unfiltered_by_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+
+    def capture(args: list[str], *, timeout: float) -> str:
+        assert timeout > 0
+        commands.append(args)
+        return ""
+
+    source = tmp_path / "checkout"
+    source.mkdir()
+    box = Box(
+        "i-0123456789abcdef0",
+        tmp_path / "ssh",
+        region="us-west-2",
+        profile="bench",
+        push=lambda _user, _key: None,
+    )
+    monkeypatch.setattr(box, "connect", lambda: None)
+    monkeypatch.setattr("ec2bench.box.checked", capture)
+
+    box.upload_contents(source, "/root/tls")
+
+    rsync = commands[-1]
+    assert rsync[0] == "rsync"
+    assert "--delete" not in rsync
+    assert not any(arg.startswith("--exclude=") for arg in rsync)
+    assert rsync[-2:] == [f"{source}/", f"{box.destination}:/root/tls/"]

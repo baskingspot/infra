@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 
 
@@ -199,29 +199,43 @@ class Box:
         """Copy `source` into `destination` as `<destination>/<source.name>`."""
         self._upload(str(source), destination)
 
-    def upload_contents(self, source: Path, destination: str) -> None:
+    def upload_contents(
+        self,
+        source: Path,
+        destination: str,
+        *,
+        exclude: Iterable[str] = (),
+        delete: bool = False,
+    ) -> None:
         """Copy the contents of the directory `source` into `destination`.
 
         The destination names the directory directly: no post-upload rename
-        depends on the local directory's basename.
+        depends on the local directory's basename. `exclude` passes rsync filter
+        patterns. A leading `/` anchors a pattern to the source root. `delete`
+        removes destination files absent from source. Write results outside
+        `destination`, or exclude their directory to preserve them.
         """
-        self._upload(str(source) + "/", destination)
+        options = [f"--exclude={pattern}" for pattern in exclude]
+        if delete:
+            options.append("--delete")
+        self._upload(str(source) + "/", destination, options)
 
-    def _upload(self, source: str, destination: str) -> None:
+    def _upload(self, source: str, destination: str, options: list[str] | None = None) -> None:
         self.run(f"mkdir -p {shlex.quote(destination)}")
-        self._rsync(source, f"{self.destination}:{destination}/")
+        self._rsync(source, f"{self.destination}:{destination}/", options)
 
     def download(self, source: str, destination: Path) -> None:
         destination.mkdir(parents=True, exist_ok=True)
         self._rsync(f"{self.destination}:{source}/", str(destination) + "/")
 
-    def _rsync(self, source: str, destination: str) -> None:
+    def _rsync(self, source: str, destination: str, options: list[str] | None = None) -> None:
         self.connect()
         checked(
             [
                 "rsync",
                 "-az",
                 "--protect-args",
+                *(options or []),
                 "-e",
                 shlex.join(["ssh", *self.options]),
                 source,

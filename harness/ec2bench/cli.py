@@ -123,6 +123,7 @@ def down(config: Config, targets: tuple[str, ...], all_targets: bool) -> None:
     instances = fleet.instances() if all_targets else fleet.selected(config.select(targets))
     ids = list(dict.fromkeys(instance["InstanceId"] for instance in instances))
     fleet.terminate(ids)
+    fleet.wait_terminated(ids)
     console.print(f"terminated {', '.join(ids)}" if ids else "no instances to terminate")
 
 

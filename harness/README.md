@@ -11,13 +11,13 @@ repository. `../docs/runbook.md` covers the AWS side.
 
 ## Install
 
-In a project that runs benchmarks:
+Pin the full commit SHA that the project tested. Replace `<full-commit-sha>` in both examples with the same commit.
 
 ```sh
-uv add "ec2bench @ git+https://github.com/baskingspot/infra@v0.2.0#subdirectory=harness"
+uv add "ec2bench @ git+https://github.com/baskingspot/infra@<full-commit-sha>#subdirectory=harness"
 ```
 
-Or pin the tag in `pyproject.toml`:
+Or pin the commit in `pyproject.toml`:
 
 ```toml
 [project]
@@ -27,7 +27,7 @@ dependencies = ["ec2bench"]
 bench = "ec2bench.cli:main"
 
 [tool.uv.sources]
-ec2bench = { git = "https://github.com/baskingspot/infra", rev = "v0.2.0", subdirectory = "harness" }
+ec2bench = { git = "https://github.com/baskingspot/infra", rev = "<full-commit-sha>", subdirectory = "harness" }
 ```
 
 The project owns the command name. The library exports `main` and the adapter
@@ -88,8 +88,8 @@ The architecture is `x86_64` or `arm64`. Unknown keys belong to the adapter.
 | `bench ssh <target>`   | Open a shell, or run one command (`bench ssh c7i -- uname -a`)             |
 | `bench extend`         | Set `ExpiresAt` to now plus a TTL                                          |
 | `bench reap`           | Terminate expired instances and instances without a valid `ExpiresAt`      |
-| `bench down <target>`  | Terminate the named targets                                                |
-| `bench down --all`     | Terminate every instance tagged with the project                           |
+| `bench down <target>`  | Terminate the named targets and wait for termination                       |
+| `bench down --all`     | Terminate every project instance and wait for termination                  |
 | `bench facts`          | Collect and cache host facts by instance ID                                |
 | `bench watch <dir>`    | Exit when `<dir>/summary.json` exists                                      |
 
@@ -128,9 +128,37 @@ box.run("uname -a")
 ```
 
 `box_for` (in `ec2bench.cli`) builds the `Box` with the SSM proxy and the key
-push. `box.poweroff()` ends a box from inside: the launch template sets the
+push. `Box.upload_contents()` accepts rsync exclusion patterns through `exclude`.
+A leading `/` anchors a pattern to the source root, so it cannot match a nested fixture directory.
+With `delete=True`, it removes destination entries that are absent from the source.
+
+```python
+box.upload_contents(
+    config.root,
+    "/root/tls",
+    exclude=[
+        "/.git",
+        "/.envrc.local",
+        "/.terraform",
+        "/zig-out",
+        "/.zig-cache",
+        "/.direnv",
+    ],
+    delete=True,
+)
+```
+
+Write results outside `/root/tls`, or exclude their directory too so `delete=True` preserves them.
+
+`box.poweroff()` ends a box from inside: the launch template sets the
 shutdown behavior to terminate, so the box terminates with no AWS call. It
-works over an open control master after the AWS session has expired.
+works over an open control master after the AWS session has expired. A poweroff
+returns before termination. Call `fleet.wait_terminated([instance_id])` before
+a relaunch.
+
+`bench down` waits for termination after `Fleet.terminate()`. An adapter that
+calls `Fleet.terminate()` directly must call `Fleet.wait_terminated()` with the
+same instance IDs before it relaunches those targets.
 
 `facts.collect(box, config.results_dir)` caches the CPU, topology, kernel, and
 image facts under `results_dir/.facts/`. If a probe fails, its value is null and
