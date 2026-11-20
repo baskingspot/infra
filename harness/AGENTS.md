@@ -18,8 +18,8 @@ consumer:
   `push_key`, `profile`; the module functions `tags`, `expiry`,
   `reap_candidates`. `outputs()` is resolved from AWS and the configuration;
   it reads no OpenTofu state, even though the name suggests it does.
-- `Box`, `RemoteError`: `run`, `upload`, `upload_contents`, `download`,
-  `ready`, `shell`, `poweroff`, `connect`.
+- `Box`, `RemoteError`: `run`, `upload`, `upload_contents`, `upload_checkout`,
+  `download`, `ready`, `shell`, `poweroff`, `connect`.
 - `cli.box_for`, `cli.ensure_up`, `cli.console`. The adapters import these;
   they are not private even though they live in the command module.
   `box_for(fleet, instance)` takes an optional third argument, `outputs`, that
@@ -43,8 +43,13 @@ Connect key, and no key file or public IP exists.
 `Box.upload` copies a file or directory and keeps its basename.
 `Box.upload_contents` copies the contents of a directory into the destination
 and drops the basename. Its optional `exclude` iterable passes rsync filter
-patterns, and `delete=True` mirrors deletions. Its defaults preserve the old,
-unfiltered behavior. Both upload methods exist because the adapters use both shapes.
+patterns, `delete=True` mirrors deletions, and `timeout` bounds rsync in seconds.
+Its defaults preserve the old, unfiltered behavior and 300-second timeout.
+`Box.upload_checkout` transfers the paths from `git ls-files`, non-ignored
+untracked files, and `.git`. Cache filters never apply to tracked files, and the
+remote results directory survives deletion. It rejects a linked worktree before
+any sync command. Without Git or a work tree, it warns on stderr and falls back
+to `upload_contents`. Both upload shapes exist because adapters use both.
 
 `bench down` calls `Fleet.wait_terminated` after `Fleet.terminate`. An adapter
 that powers off or terminates a box must wait for its instance ID before a
