@@ -36,6 +36,18 @@ _CHECKOUT_CACHE_DIRS = frozenset(
 _CHECKOUT_LOCAL_FILES = frozenset({b".envrc.local"})
 
 
+def _filter_literal(path: bytes, *, wildcard: bool = False) -> bytes:
+    """Quote a literal path for an rsync filter pattern."""
+    if not wildcard and not any(char in path for char in (b"*", b"?", b"[")):
+        return path
+    return (
+        path.replace(b"\\", b"\\\\")
+        .replace(b"*", b"\\*")
+        .replace(b"?", b"\\?")
+        .replace(b"[", b"\\[")
+    )
+
+
 class RemoteError(subprocess.SubprocessError):
     """A transport error with remote diagnostics."""
 
@@ -260,14 +272,20 @@ class Box:
         protects `results_dir`, relative to the checkout root. Untracked local
         files under that directory do not transfer.
 
-        If Git is unavailable or `source` is not a work tree, this method falls
-        back to `upload_contents` with generated-file filters and `delete=True`.
-        That fallback can omit a tracked file whose path matches a cache filter.
+        A linked worktree raises `ValueError` before any sync command. Use a
+        standalone checkout instead. If Git is unavailable or `source` is not a
+        work tree, this method prints a warning and falls back to
+        `upload_contents` with generated-file filters and `delete=True`. That
+        fallback can omit a tracked file whose path matches a cache filter.
         `timeout` bounds the rsync command in seconds.
         """
         results = os.fsencode(results_dir).strip(b"/")
         if not results or results == b"." or b".." in results.split(b"/"):
             raise ValueError("results_dir must name a directory inside the checkout")
+        if (source / ".git").is_file():
+            raise ValueError(
+                f"{source}: a linked worktree is not supported. Use a standalone checkout."
+            )
         try:
             tracked = subprocess.run(
                 ["git", "-C", str(source), "ls-files", "-z", "--cached"],
@@ -287,7 +305,13 @@ class Box:
                 check=True,
                 capture_output=True,
             ).stdout
-        except FileNotFoundError, subprocess.CalledProcessError:
+        except (FileNotFoundError, subprocess.CalledProcessError) as error:
+            reason = (
+                "source is not a Git repository"
+                if isinstance(error, subprocess.CalledProcessError)
+                else "Git is unavailable"
+            )
+            print(f"upload_checkout: {reason}. This is a full-tree sync.", file=sys.stderr)
             excludes = [
                 *(f"{os.fsdecode(name)}/" for name in sorted(_CHECKOUT_CACHE_DIRS)),
                 *(os.fsdecode(name) for name in sorted(_CHECKOUT_LOCAL_FILES)),
@@ -307,35 +331,34 @@ class Box:
                 or path.startswith(results + b"/")
             )
 
-        # Keep tracked paths that are absent from the work tree. Rsync turns
-        # those entries into explicit deletion requests.
+        # Sender-only rules exclude unlisted files without protecting their
+        # remote copies from deletion. Exact tracked paths precede the final
+        # catch-all, so cache names can never remove a tracked file.
         selected = {path for path in tracked.split(b"\0") if path}
         selected.update(path for path in untracked.split(b"\0") if path and not generated(path))
-        selected.add(b".git")
-        for base, directories, filenames in os.walk(source / ".git"):
-            relative = Path(base).relative_to(source)
-            for name in directories + filenames:
-                selected.add(os.fsencode((relative / name).as_posix()))
+        if any(b"\n" in path or b"\r" in path for path in selected):
+            raise ValueError("upload_checkout does not support newlines in paths")
 
-        # A file list implies parent directories, but implied directories do not
-        # authorize deletions. List each parent and the root explicitly. Keep
-        # recursion off so those directories do not reintroduce generated files.
-        for path in tuple(selected):
+        directories: set[bytes] = set()
+        for path in selected:
             while parent := path.rpartition(b"/")[0]:
-                selected.add(parent)
+                directories.add(parent)
                 path = parent
-        selected.add(b".")
 
-        with tempfile.NamedTemporaryFile(prefix="ec2bench-checkout-") as listing:
-            listing.write(b"\0".join(sorted(selected)) + b"\0")
-            listing.flush()
+        rules = [b"show /.git/***"]
+        rules.extend(
+            b"show " + _filter_literal(b"/" + directory) + b"/" for directory in sorted(directories)
+        )
+        rules.extend(b"show " + _filter_literal(b"/" + path) for path in sorted(selected))
+        rules.append(b"hide *")
+        with tempfile.NamedTemporaryFile(prefix="ec2bench-checkout-") as filters:
+            filters.write(b"\n".join(rules) + b"\n")
+            filters.flush()
+            results_pattern = _filter_literal(b"/" + results, wildcard=True) + b"/***"
             options = [
-                "--dirs",
                 "--delete",
-                "--delete-missing-args",
-                "--from0",
-                f"--files-from={listing.name}",
-                f"--filter=protect /{os.fsdecode(results)}/***",
+                f"--filter=merge {filters.name}",
+                f"--filter=protect {os.fsdecode(results_pattern)}",
             ]
             self._upload(str(source) + "/", destination, options, timeout=timeout)
 

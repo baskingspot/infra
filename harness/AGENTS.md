@@ -47,8 +47,9 @@ patterns, `delete=True` mirrors deletions, and `timeout` bounds rsync in seconds
 Its defaults preserve the old, unfiltered behavior and 300-second timeout.
 `Box.upload_checkout` transfers the paths from `git ls-files`, non-ignored
 untracked files, and `.git`. Cache filters never apply to tracked files, and the
-remote results directory survives deletion. Without Git or a work tree, it falls
-back to `upload_contents`. Both upload shapes exist because adapters use both.
+remote results directory survives deletion. It rejects a linked worktree before
+any sync command. Without Git or a work tree, it warns on stderr and falls back
+to `upload_contents`. Both upload shapes exist because adapters use both.
 
 `bench down` calls `Fleet.wait_terminated` after `Fleet.terminate`. An adapter
 that powers off or terminates a box must wait for its instance ID before a

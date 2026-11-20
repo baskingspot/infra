@@ -155,10 +155,16 @@ filters cover Zig build outputs and common tool caches at any depth. These filte
 apply only to untracked paths, so a tracked `*.pem` or golden file under `zig-out`
 survives. The helper also omits `.envrc.local`.
 
-Rsync deletes stale remote paths but protects `results_dir`, relative to the
-checkout root. If Git is absent or the source is not a work tree, the helper calls
-`upload_contents` with fixed filters and `delete=True`. That fallback can exclude
-a tracked file whose path matches a generated-file filter.
+Rsync deletes stale remote paths, including files that only exist in old
+subdirectories. Receiver-only rules protect `results_dir`, relative to the
+checkout root. Sender-only cache rules do not protect stale remote files from
+deletion. The helper rejects a linked worktree by name before any sync command.
+Use a standalone checkout instead.
+
+If Git is absent or the source is not a work tree, the helper calls
+`upload_contents` with fixed filters and `delete=True`. A line on stderr says
+that this is a full-tree sync. That fallback can exclude a tracked file whose
+path matches a generated-file filter.
 
 `Box.upload()`, `Box.upload_contents()`, `Box.upload_checkout()`, and
 `Box.download()` accept a `timeout` keyword in seconds. The default is 300.

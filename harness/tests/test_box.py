@@ -279,6 +279,8 @@ def test_upload_checkout_uses_git_and_preserves_results(
 
     cache = source / "tests/fixtures/zig-out/cache.bin"
     cache.write_text("untracked build output\n")
+    (source / ".gitignore").write_text("/.envrc.local\n")
+    (source / ".envrc.local").write_text("local-only configuration\n")
     untracked = source / "notes.txt"
     untracked.write_text("untracked source input\n")
 
@@ -288,6 +290,9 @@ def test_upload_checkout_uses_git_and_preserves_results(
     results.write_text("keep this result\n")
     stale = remote / "stale.txt"
     stale.write_text("remove this file\n")
+    nested_stale = remote / "tests/fixtures/stale.txt"
+    nested_stale.parent.mkdir(parents=True)
+    nested_stale.write_text("remove this nested file\n")
 
     rsync_timeouts: list[float] = []
 
@@ -316,9 +321,11 @@ def test_upload_checkout_uses_git_and_preserves_results(
     assert (remote / "tests/fixtures/zig-out/golden.bin").read_text() == ("tracked golden output\n")
     assert not (remote / "tests/fixtures/zig-out/cache.bin").exists()
     assert (remote / "notes.txt").read_text() == "untracked source input\n"
+    assert not (remote / ".envrc.local").exists()
     assert (remote / ".git/index").exists()
     assert results.read_text() == "keep this result\n"
     assert not stale.exists()
+    assert not nested_stale.exists()
 
     fixture.unlink()
     box.upload_checkout(source, str(remote), timeout=31)
@@ -328,8 +335,57 @@ def test_upload_checkout_uses_git_and_preserves_results(
     assert rsync_timeouts == [31, 31]
 
 
-def test_upload_checkout_falls_back_to_plain_sync(
+def test_upload_checkout_rejects_a_linked_worktree(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    primary = tmp_path / "primary"
+    primary.mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    checked(["git", "init", "--quiet", str(primary)], timeout=30)
+    checked(
+        [
+            "git",
+            "-C",
+            str(primary),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "--quiet",
+            "-m",
+            "initial",
+        ],
+        timeout=30,
+    )
+    source = tmp_path / "linked"
+    checked(
+        ["git", "-C", str(primary), "worktree", "add", "--quiet", "-b", "linked", str(source)],
+        timeout=30,
+    )
+    assert (source / ".git").is_file()
+
+    box = Box(
+        "i-0123456789abcdef0",
+        tmp_path / "ssh",
+        region="us-west-2",
+        profile="bench",
+        push=lambda _user, _key: None,
+    )
+    uploads: list[str] = []
+    monkeypatch.setattr(box, "_upload", lambda *_args, **_kwargs: uploads.append("upload"))
+
+    with pytest.raises(ValueError, match=r"linked worktree.*standalone checkout"):
+        box.upload_checkout(source, "/root/tls")
+    assert not uploads
+
+
+def test_upload_checkout_falls_back_to_plain_sync(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     source = tmp_path / "not-a-repo"
     source.mkdir()
@@ -368,6 +424,9 @@ def test_upload_checkout_falls_back_to_plain_sync(
     assert calls[0]["destination"] == "/root/tls"
     assert calls[0]["delete"] is True
     assert calls[0]["timeout"] == 37
+    captured = capsys.readouterr()
+    assert "source is not a Git repository" in captured.err
+    assert "full-tree sync" in captured.err
     assert set(calls[0]["exclude"]) == {
         ".bench-cache/",
         ".direnv/",
